@@ -293,6 +293,8 @@ result = submit_booking(hotel_name, hotel_price, destination, swap_amount)
 See [SAFETY.md](SAFETY.md) for details on:
 - Spending limits (max hotel price, budget enforcement)
 - Price validation (slippage checks, rate limits)
+
+- Updated documentation.
 - Error handling (API failures, fallback logic)
 - On-chain protections (pre-approval gates, decision logging)
 
