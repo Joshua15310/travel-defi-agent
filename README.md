@@ -1,5 +1,7 @@
 # Crypto Travel Booker ✈️
 
+[![Python Tests](https://github.com/Joshua15310/travel-defi-agent/actions/workflows/python-tests.yml/badge.svg)](https://github.com/Joshua15310/travel-defi-agent/actions/workflows/python-tests.yml)
+
 **AI agent that books hotels under budget using USDC on Warden Protocol.**
 
 > **Submitted for Warden $1M Agent Incentive Program — $10K Early Bird Eligible**

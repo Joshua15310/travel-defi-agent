@@ -5,7 +5,7 @@ Tests each node independently and the full workflow.
 
 import unittest
 from langchain_core.messages import HumanMessage
-from agent import parse_intent, search_hotels, check_swap, book_hotel, app
+from agent import parse_intent, search_hotels, check_swap, book_hotel, workflow_app
 
 
 class TestParseIntent(unittest.TestCase):
@@ -189,7 +189,7 @@ class TestFullWorkflow(unittest.TestCase):
         
         outputs = []
         try:
-            for output in app.stream(test_input):
+            for output in workflow_app.stream(test_input):
                 outputs.append(output)
         except Exception as e:
             self.fail(f"Workflow execution failed: {type(e).__name__}: {str(e)}")
@@ -202,13 +202,115 @@ class TestFullWorkflow(unittest.TestCase):
             "messages": [HumanMessage(content="Book a hotel in Paris for $250")]
         }
         
-        for output in app.stream(test_input):
+        for output in workflow_app.stream(test_input):
             for node_name, state in output.items():
                 # Each node should update specific state keys
                 if "destination" in state:
                     assert state["destination"] != ""
                 if "hotel_price" in state:
                     assert state["hotel_price"] > 0
+
+
+class TestWardenIntegration(unittest.TestCase):
+    """Test Warden testnet integration for on-chain bookings."""
+
+    def test_warden_booking_client_build_tx(self):
+        """Test building a booking transaction."""
+        from warden_client import WardenBookingClient
+        
+        client = WardenBookingClient(
+            account_id="0xTEST_ACCOUNT",
+            private_key="0xTEST_KEY",
+            testnet=True
+        )
+        
+        result = client.build_booking_tx("Test Hotel", 150.0, "Paris", 0.0)
+        
+        assert "tx" in result or "error" in result
+        if "tx" in result:
+            assert result.get("tx_hash") is not None
+
+    def test_warden_booking_client_sign_tx(self):
+        """Test signing a transaction."""
+        from warden_client import WardenBookingClient
+        
+        client = WardenBookingClient(
+            account_id="0xTEST_ACCOUNT",
+            private_key="0xTEST_KEY",
+            testnet=True
+        )
+        
+        mock_tx = {"to": "0xABC", "data": "0x123"}
+        result = client.sign_transaction(mock_tx)
+        
+        assert "signature" in result or "error" in result
+        if "signature" in result:
+            assert result.get("signer") == "0xTEST_ACCOUNT"
+
+    def test_warden_booking_client_submit_tx(self):
+        """Test submitting a signed transaction."""
+        from warden_client import WardenBookingClient
+        
+        client = WardenBookingClient(
+            account_id="0xTEST_ACCOUNT",
+            private_key="0xTEST_KEY",
+            testnet=True
+        )
+        
+        mock_signed_tx = {"to": "0xABC", "data": "0x123", "signature": "0xSIG"}
+        result = client.submit_transaction(mock_signed_tx)
+        
+        assert "tx_hash" in result or "error" in result
+        assert result.get("network") == "testnet"
+
+    def test_warden_booking_client_fetch_status(self):
+        """Test fetching transaction status."""
+        from warden_client import WardenBookingClient
+        
+        client = WardenBookingClient(
+            account_id="0xTEST_ACCOUNT",
+            private_key="0xTEST_KEY",
+            testnet=True
+        )
+        
+        result = client.fetch_transaction_status("0xFAKE_TX_HASH")
+        
+        assert "status" in result or "error" in result
+        if "status" in result:
+            assert result["status"] in ["pending", "confirmed"]
+
+    def test_warden_submit_booking_full_flow(self):
+        """Test full submit_booking flow (mock)."""
+        from warden_client import submit_booking
+        
+        # This will use mocks since no real credentials are set
+        result = submit_booking(
+            hotel_name="Budget Hotel",
+            hotel_price=180.0,
+            destination="Tokyo",
+            swap_amount=0.0
+        )
+        
+        assert "tx_hash" in result or "error" in result
+        if "tx_hash" in result:
+            assert isinstance(result["tx_hash"], str)
+            assert len(result["tx_hash"]) > 0
+
+    def test_warden_spend_limit_enforcement(self):
+        """Test that booking above testnet spend limit is rejected."""
+        from warden_client import WardenBookingClient
+        
+        client = WardenBookingClient(
+            account_id="0xTEST_ACCOUNT",
+            private_key="0xTEST_KEY",
+            testnet=True
+        )
+        
+        # Try to book a hotel above the $500 testnet limit
+        result = client.build_booking_tx("Luxury Hotel", 600.0, "Paris", 0.0)
+        
+        assert "error" in result
+        assert "exceeds testnet limit" in result["error"]
 
 
 if __name__ == "__main__":

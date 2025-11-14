@@ -1,5 +1,7 @@
-# agent.py - Crypto Travel Booker (FIXED PARSER + BOOKING.COM)
-from langgraph.graph import StateGraph, END
+# agent.py - Crypto Travel Booker
+# Orchestrates the booking flow using LangGraph workflow_app
+# This file focuses on node implementations and CLI entry point.
+
 from langchain_core.messages import HumanMessage
 from langchain_groq import ChatGroq
 import requests
@@ -9,6 +11,10 @@ from typing import TypedDict, Annotated
 import operator
 
 load_dotenv()
+
+# === IMPORTS ===
+# Import graph builder and state (workflow app will be built at end of file)
+from workflow.graph import build_workflow, AgentState
 
 # === LLM: Grok AI ===
 GROK_KEY = os.getenv("GROK_API_KEY")
@@ -46,6 +52,7 @@ class AgentState(TypedDict):
     needs_swap: bool
     swap_amount: float
     final_status: str
+    tx_hash: str  # For Warden transaction hash
 
 # === 1. Parse User (FIXED: handles "in", "to", "at") ===
 def parse_intent(state):
@@ -257,22 +264,13 @@ def book_hotel(state):
             "messages": [HumanMessage(content="Booking failed. Please try again.")]
         }
 
-# === BUILD ===
-workflow = StateGraph(AgentState)
-workflow.add_node("parse", parse_intent)
-workflow.add_node("search", search_hotels)
-workflow.add_node("swap", check_swap)
-workflow.add_node("book", book_hotel)
 
-workflow.set_entry_point("parse")
-workflow.add_edge("parse", "search")
-workflow.add_edge("search", "swap")
-workflow.add_edge("swap", "book")
-workflow.add_edge("book", END)
+# === BUILD WORKFLOW ===
+# Now that all node functions are defined, build the workflow
+workflow_app = build_workflow(parse_intent, search_hotels, check_swap, book_hotel)
 
-app = workflow.compile()
 
-# === TEST ===
+# === CLI ENTRY POINT ===
 if __name__ == "__main__":
     import argparse
 
@@ -285,10 +283,10 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     def run_workflow_once(test_input, live=False):
-        # Try streaming first; fallback to synchronous run for deterministic output
+        """Execute the LangGraph workflow and stream output."""
         got_output = False
         try:
-            for output in app.stream(test_input):
+            for output in workflow_app.stream(test_input):
                 for value in output.values():
                     if "messages" in value and value["messages"]:
                         print("Agent:", value["messages"][-1].content)

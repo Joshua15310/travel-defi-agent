@@ -1,27 +1,47 @@
 """
 Explicit LangGraph workflow definition for the Crypto Travel Agent.
-This file makes the graph wiring explicit (nodes, edges, entry point)
-so reviewers can quickly see the LangGraph integration.
 
-It imports the node functions from `agent.py` and exports a compiled
-workflow called `workflow_app` which can be used by external tooling
-or the README as a canonical entry point for tracing.
+This module defines the graph structure (nodes and edges) without importing
+node implementations. Node functions are added dynamically to avoid circular
+imports with agent.py.
 """
 from langgraph.graph import StateGraph, END
-
-# Import node functions and AgentState type from the main agent module.
-# Importing `agent` here is intentionally lightweight: this module only
-# references the already-defined functions in `agent.py` and registers
-# them in the StateGraph.
-from agent import AgentState, parse_intent, search_hotels, check_swap, book_hotel
+from typing import TypedDict, Annotated
+import operator
+from langchain_core.messages import HumanMessage
 
 
-def build_workflow():
+class AgentState(TypedDict):
+    """Shared state across all workflow nodes."""
+    messages: Annotated[list, operator.add]
+    user_query: str
+    destination: str
+    budget_usd: float
+    hotel_name: str
+    hotel_price: float
+    needs_swap: bool
+    swap_amount: float
+    final_status: str
+    tx_hash: str  # For Warden transaction hash
+
+
+def build_workflow(parse_fn, search_fn, swap_fn, book_fn):
+    """Build and compile the LangGraph workflow.
+    
+    Args:
+        parse_fn: parse_intent function
+        search_fn: search_hotels function
+        swap_fn: check_swap function
+        book_fn: book_hotel function
+    
+    Returns:
+        Compiled workflow (LangGraph app)
+    """
     wf = StateGraph(AgentState)
-    wf.add_node("parse", parse_intent)
-    wf.add_node("search", search_hotels)
-    wf.add_node("swap", check_swap)
-    wf.add_node("book", book_hotel)
+    wf.add_node("parse", parse_fn)
+    wf.add_node("search", search_fn)
+    wf.add_node("swap", swap_fn)
+    wf.add_node("book", book_fn)
 
     wf.set_entry_point("parse")
     wf.add_edge("parse", "search")
@@ -32,5 +52,5 @@ def build_workflow():
     return wf.compile()
 
 
-# Export a ready-to-use compiled workflow for tooling and reviewers.
-workflow_app = build_workflow()
+# Lazy initialization: workflow_app is built in agent.py after imports are resolved
+workflow_app = None
