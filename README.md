@@ -4,9 +4,24 @@
 
 **AI agent that books hotels under budget using USDC on Warden Protocol.**
 
-> **Submitted for Warden $1M Agent Incentive Program — $10K Early Bird Eligible**
+ > **Submitted for Warden $1M Agent Incentive Program — $10K Early Bird Eligible**
 
 ---
+
+## Quick Overview
+
+- **What the agent does:** Parses a natural-language booking request, searches for hotels, calculates whether a USDC swap is needed, and (optionally) confirms the booking on-chain via the Warden Protocol (testnet-ready). Guardrails prevent overspend and limit testnet transactions.
+- **How to run it:** See the "Running without live keys" section below for demo mode. For live runs, copy `.env.example` to `.env`, add credentials, then run `python agent.py run --live -m "Book me a hotel in Tokyo under $300"`.
+- **Example input / output:** See the "Live example (mock)" section later in this README.
+- **Safety limits (plain text):** Testnet spend limit $500; per-swap slippage buffer 1%; minimum price sanity check $10; API timeouts 10s. These are enforced in code.
+
+## Short Architecture Flow
+
+1. User request (HumanMessage) enters the LangGraph workflow.
+2. `parse_intent` extracts `destination` and `budget_usd`.
+3. `search_hotels` queries Booking.com (or returns a mocked hotel) and validates price.
+4. `check_swap` enforces budget and computes a USDC swap amount (1% buffer) if needed.
+5. `book_hotel` attempts an on-chain booking via `warden_client.submit_booking()` and returns a `tx_hash` when successful (mocked when credentials are missing).
 
 ## How It Works
 1. **User says**:  
