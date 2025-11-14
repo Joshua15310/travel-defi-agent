@@ -27,3 +27,20 @@ Agent: You have enough USD!
 Agent: Booking confirmed on Warden! Paid with USDC. Enjoy Tokyo!
 
 Agent ready for Warden Hub! Submit for $10K.
+
+
+---
+
+## Tech Stack
+| Component | Tool |
+|---------|------|
+| AI Brain | **Grok-beta (xAI)** ← *Official xAI model* |
+| Hotel Data | **Booking.com API** |
+| Crypto Swap | **1inch API logic** |
+| On-Chain | **Warden Protocol** (Space-ready) |
+| Language | Python |
+
+> **Powered by Grok AI (xAI) — fully aligned with Warden & xAI ecosystem**
+
+---
+
