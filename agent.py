@@ -1,7 +1,7 @@
 # agent.py - Crypto Travel Booker (FIXED PARSER + BOOKING.COM)
 from langgraph.graph import StateGraph, END
 from langchain_core.messages import HumanMessage
-from langchain_openai import ChatOpenAI
+from langchain_groq import ChatGroq
 import requests
 import os
 from dotenv import load_dotenv
@@ -11,9 +11,9 @@ import operator
 load_dotenv()
 
 # === LLM: Grok AI ===
-llm = ChatOpenAI(
+llm = ChatGroq(
     model="grok-beta",
-    api_key=os.getenv("OPENAI_API_KEY"),
+    api_key=os.getenv("GROK_API_KEY"),
     temperature=0
 )
 
