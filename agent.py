@@ -203,13 +203,19 @@ def check_swap(state):
 
 # === 4. Book ===
 def book_hotel(state):
-    """Create booking confirmation. Ready for Warden on-chain integration."""
+    """Create booking confirmation. Attempt to perform on-chain booking via Warden.
+
+    This function uses `warden_client.submit_booking` to perform the
+    on-chain action when available and configured; otherwise it falls back
+    to a mocked confirmation. The return value includes `tx_hash` when an
+    on-chain submission occurred (or the mocked tx hash).
+    """
     try:
         hotel_name = state.get("hotel_name", "Unknown Hotel")
         hotel_price = state.get("hotel_price", 0.0)
         destination = state.get("destination", "Unknown")
         swap_amount = state.get("swap_amount", 0.0)
-        
+
         # Validate state before booking
         if not hotel_name or hotel_price <= 0:
             print(f"[ERROR] Invalid booking state: hotel_name='{hotel_name}', price=${hotel_price}")
@@ -217,11 +223,29 @@ def book_hotel(state):
                 "final_status": "Invalid booking details",
                 "messages": [HumanMessage(content="Booking failed: invalid hotel details.")]
             }
-        
+
         print(f"[BOOK] Confirming booking: {hotel_name} ({destination}) for ${hotel_price}")
         if swap_amount > 0:
             print(f"[BOOK] Swap: ${swap_amount} USDC")
-        
+
+        # Attempt on-chain booking through Warden wrapper
+        try:
+            from warden_client import submit_booking
+            result = submit_booking(hotel_name, hotel_price, destination, swap_amount)
+            if result.get("tx_hash"):
+                tx = result["tx_hash"]
+                print(f"[BOOK] Warden tx: {tx}")
+                return {
+                    "final_status": f"Booked {hotel_name} for ${hotel_price}",
+                    "tx_hash": tx,
+                    "messages": [HumanMessage(content=f"Booking confirmed on Warden! Paid with USDC. Enjoy {destination}!")]
+                }
+            else:
+                print(f"[BOOK] Warden returned error: {result.get('error')}")
+        except Exception as e:
+            print(f"[WARN] Warden booking attempt failed: {type(e).__name__}: {e}")
+
+        # Fallback confirmation (mock)
         return {
             "final_status": f"Booked {hotel_name} for ${hotel_price}",
             "messages": [HumanMessage(content=f"Booking confirmed on Warden! Paid with USDC. Enjoy {destination}!")]

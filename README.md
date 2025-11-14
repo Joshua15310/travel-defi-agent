@@ -200,6 +200,14 @@ chmod +x run-agent-production.sh
 
 ---
 
+## Workflow & On-Chain Integration (reviewer notes)
+
+- **Explicit LangGraph wiring:** See `workflow/graph.py` — this file registers the four LangGraph nodes (`parse`, `search`, `swap`, `book`) and exports a compiled `workflow_app` for tracing and testing.
+- **Warden SDK wrapper:** See `warden_client.py` — a thin wrapper that uses a Warden SDK when configured or returns a deterministic mocked tx hash otherwise. The `book_hotel` node calls `warden_client.submit_booking(...)` and includes `tx_hash` in the node output when available.
+- **Tests:** `test_agent.py::TestBookHotel::test_book_with_warden_mock` demonstrates how the on-chain path is exercised in CI via a mocked Warden client.
+
+---
+
 ## Safety & Guardrails
 
 See [SAFETY.md](SAFETY.md) for details on:

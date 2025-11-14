@@ -148,6 +148,35 @@ class TestBookHotel(unittest.TestCase):
         assert "200.0" in result["final_status"]
         assert "Paris" in result["messages"][-1].content
 
+    def test_book_with_warden_mock(self):
+        """Test on-chain booking path using a mocked Warden client."""
+        # Patch the warden_client.submit_booking to return a deterministic tx
+        import warden_client
+        original_submit = getattr(warden_client, "submit_booking", None)
+        try:
+            warden_client.submit_booking = lambda hotel, price, dest, swap: {"tx_hash": "0xFAKE_TX_123"}
+
+            state = {
+                "hotel_name": "Budget Hotel",
+                "hotel_price": 180.0,
+                "destination": "Tokyo",
+                "messages": [],
+                "user_query": "",
+                "budget_usd": 300.0,
+                "needs_swap": False,
+                "swap_amount": 0.0,
+                "final_status": ""
+            }
+            result = book_hotel(state)
+
+            # Ensure tx_hash propagated into result when Warden client used
+            assert result.get("tx_hash") == "0xFAKE_TX_123"
+            assert "Booked" in result["final_status"]
+        finally:
+            # restore original
+            if original_submit is not None:
+                warden_client.submit_booking = original_submit
+
 
 class TestFullWorkflow(unittest.TestCase):
     """Test the complete LangGraph workflow."""
