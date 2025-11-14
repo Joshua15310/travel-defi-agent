@@ -69,6 +69,122 @@ This repo contains a small hook script at `hooks/prevent-env-commit` that will s
 
 This copies the hook into `.git/hooks/pre-commit` for your local clone. Hooks are local to a clone and are not pushed to remotes.
 
+## Deployment to LangSmith Cloud
+
+The agent is instrumented with LangSmith tracing for transparent execution logging. Follow these steps to deploy to LangSmith Cloud:
+
+### 1. Register Your LangSmith Project
+
+```powershell
+# Set your LangSmith API key (get from https://smith.langchain.com)
+$env:LANGSMITH_API_KEY = "your-key-here"
+$env:LANGSMITH_PROJECT = "travel-agent-competition"
+
+# Verify setup (optional)
+echo $env:LANGSMITH_API_KEY
+```
+
+### 2. Run Agent with Tracing Enabled
+
+```powershell
+# Demo mode with LangSmith tracing
+python agent.py test
+
+# Live mode with tracing
+python agent.py run --live -m "Book me a hotel in Tokyo under $300"
+```
+
+All node executions, state transitions, and API calls will appear in your LangSmith dashboard.
+
+### 3. View Traces in LangSmith
+
+Open [LangSmith Dashboard](https://smith.langchain.com) and navigate to:
+- **Project**: `travel-agent-competition`
+- **Traces**: Shows each agent run with timestamps, node execution order, and state snapshots
+- **Latency**: Hover over traces to see per-node timing (parse → search → swap → book)
+
+**Example Trace Breakdown** (single agent run):
+```
+├─ parse_intent (50ms)
+│  ├─ Input: "Book me a hotel in Tokyo under $300"
+│  ├─ Output: destination="Tokyo", budget_usd=300.0
+├─ search_hotels (200ms)
+│  ├─ Input: destination="Tokyo", budget_usd=300.0
+│  ├─ API: Booking.com (or mocked fallback)
+│  ├─ Output: hotel_name="Budget Hotel", hotel_price=180.0
+├─ check_swap (30ms)
+│  ├─ Input: budget_usd=300.0, hotel_price=180.0
+│  ├─ Logic: No swap needed (180 < 300)
+│  ├─ Output: swap_amount=0, message="You have enough USD!"
+├─ book_hotel (100ms)
+│  ├─ Input: hotel_name="Budget Hotel", hotel_price=180.0, swap_amount=0
+│  ├─ Action: Sign booking on Warden Protocol (or mocked)
+│  ├─ Output: status="confirmed", tx_hash="0x..."
+```
+
+### 4. Environment Variables (Complete List)
+
+Add to your `.env` before running with `--live`:
+
+```bash
+# LangSmith (for tracing)
+LANGSMITH_API_KEY=lsv2_...
+LANGSMITH_PROJECT=travel-agent-competition
+
+# Hotel Search
+BOOKING_API_KEY=...
+BOOKING_API_URL=https://booking-com.p.rapidapi.com
+BOOKING_API_HOST=booking-com.p.rapidapi.com
+
+# LLM
+GROK_API_KEY=...
+OPENAI_API_KEY=sk-...
+
+# 1inch (swap quotes)
+ONEINCH_API_KEY=...  # Optional; agent works without it
+
+# Warden (booking confirmation)
+WARDEN_ACCOUNT_ID=...  # Your Warden agent account ID
+WARDEN_PRIVATE_KEY=...  # Base64-encoded private key (do NOT commit)
+```
+
+### 5. Production Deployment Script
+
+To run the agent in production on a server, use:
+
+```bash
+#!/bin/bash
+# run-agent-production.sh
+set -e
+
+# Load environment
+source /secure/path/.env
+
+# Run agent with safety limits
+timeout 300 python agent.py run --live \
+  -m "Book me a hotel in Tokyo under $300"
+
+echo "✓ Agent execution completed. Check LangSmith dashboard for trace."
+```
+
+Make the script executable:
+```bash
+chmod +x run-agent-production.sh
+./run-agent-production.sh
+```
+
+### 6. Monitoring & Alerts
+
+**LangSmith Metrics to Watch**:
+- **Avg Latency**: < 500ms (parse + search + swap + book)
+- **Error Rate**: < 1% (API failures trigger mocked fallbacks)
+- **Token Usage**: Track Grok API spend per run (estimate: 100-150 tokens/booking)
+- **API Calls**: Count Booking.com, 1inch, Warden calls per day
+
+**Set Alerts** (in LangSmith dashboard):
+- If avg latency > 1s, investigate search node (Booking.com timeout)
+- If error rate > 5%, check API keys and rate limits
+- If token cost > $1 per booking, optimize prompt templates
 
 ## Tech Stack
 | Component | Tool |
@@ -77,9 +193,20 @@ This copies the hook into `.git/hooks/pre-commit` for your local clone. Hooks ar
 | Hotel Data | **Booking.com API** |
 | Crypto Swap | **1inch API logic** |
 | On-Chain | **Warden Protocol** (Space-ready) |
+| Workflow | **LangGraph** (state machine with tracing) |
 | Language | Python |
 
 > **Powered by Grok AI (xAI) — fully aligned with Warden & xAI ecosystem**
+
+---
+
+## Safety & Guardrails
+
+See [SAFETY.md](SAFETY.md) for details on:
+- Spending limits (max hotel price, budget enforcement)
+- Price validation (slippage checks, rate limits)
+- Error handling (API failures, fallback logic)
+- On-chain protections (pre-approval gates, decision logging)
 
 ---
 

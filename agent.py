@@ -49,39 +49,51 @@ class AgentState(TypedDict):
 
 # === 1. Parse User (FIXED: handles "in", "to", "at") ===
 def parse_intent(state):
-    query = state["messages"][-1].content.lower()
-    destination = "Paris"
-    budget = 400.0
+    """Parse user intent from message. Extracts destination and budget."""
+    try:
+        query = state["messages"][-1].content.lower()
+        destination = "Paris"
+        budget = 400.0
 
-    # Find destination after "to", "in", "at"
-    markers = ["to ", "in ", "at "]
-    dest_part = query
-    for marker in markers:
-        if marker in query:
-            dest_part = query.split(marker, 1)[-1]
-            break
+        # Find destination after "to", "in", "at"
+        markers = ["to ", "in ", "at "]
+        dest_part = query
+        for marker in markers:
+            if marker in query:
+                dest_part = query.split(marker, 1)[-1]
+                break
 
-    # Extract first word as city
-    words = dest_part.strip().split()
-    if words:
-        destination = words[0].capitalize()
+        # Extract first word as city
+        words = dest_part.strip().split()
+        if words:
+            destination = words[0].capitalize()
 
-    # Extract budget after $
-    if "$" in query:
-        try:
-            budget_str = query.split("$")[-1]
-            budget = float(''.join(filter(str.isdigit, budget_str.split()[0])))
-        except:
-            pass
+        # Extract budget after $
+        if "$" in query:
+            try:
+                budget_str = query.split("$")[-1]
+                budget = float(''.join(filter(str.isdigit, budget_str.split()[0])))
+            except Exception as e:
+                print(f"[WARN] Failed to parse budget from '{budget_str}': {e}. Using default $400")
+                pass
 
-    return {
-        "user_query": query,
-        "destination": destination,
-        "budget_usd": budget
-    }
+        print(f"[PARSE] Extracted destination='{destination}', budget=${budget}")
+        return {
+            "user_query": query,
+            "destination": destination,
+            "budget_usd": budget
+        }
+    except Exception as e:
+        print(f"[ERROR] parse_intent failed: {type(e).__name__}: {e}")
+        return {
+            "user_query": state.get("messages", [{"content": ""}])[-1].content if state.get("messages") else "",
+            "destination": "Paris",
+            "budget_usd": 400.0
+        }
 
 # === 2. Search Hotels on Booking.com ===
 def search_hotels(state, live=False):
+    """Search for hotels on Booking.com. Falls back to mocked result on error."""
     url = "https://booking-com.p.rapidapi.com/v1/hotels/search"
     querystring = {
         "checkout_date": "2025-12-16",
@@ -103,6 +115,7 @@ def search_hotels(state, live=False):
 
     # If not running live, skip the network call and return a mocked result
     if not live or not BOOKING_KEY:
+        print(f"[SEARCH] Live mode disabled or no API key. Using mocked fallback: Budget Hotel, $180.0")
         return {
             "hotel_name": "Budget Hotel",
             "hotel_price": 180.0,
@@ -110,9 +123,11 @@ def search_hotels(state, live=False):
         }
 
     try:
+        print(f"[SEARCH] Querying Booking.com API for '{state.get('destination', 'Unknown')}'...")
         response = requests.get(url, headers=headers, params=querystring, timeout=10)
+        
         if response.status_code != 200:
-            print(f"Booking API returned {response.status_code}: {response.text}")
+            print(f"[ERROR] Booking API returned {response.status_code}: {response.text[:200]}")
             name, price = "Budget Hotel", 180.0
         else:
             data = response.json()
@@ -122,12 +137,21 @@ def search_hotels(state, live=False):
                 # safe extraction of price
                 try:
                     price = float(hotel.get("price_breakdown", {}).get("all_inclusive_price", 180.0))
-                except Exception:
+                    if price < 10:
+                        print(f"[WARN] Suspicious price ${price}. Using default $180.0")
+                        price = 180.0
+                except Exception as e:
+                    print(f"[WARN] Failed to parse price: {e}. Using default $180.0")
                     price = 180.0
+                print(f"[SEARCH] Found {name} for ${price}/night")
             else:
+                print("[SEARCH] No results from API. Using mocked fallback.")
                 name, price = "Budget Hotel", 180.0
+    except requests.Timeout:
+        print("[ERROR] Booking API request timed out (>10s). Using mocked fallback.")
+        name, price = "Budget Hotel", 180.0
     except Exception as e:
-        print("Booking request failed:", type(e).__name__, str(e))
+        print(f"[ERROR] search_hotels failed: {type(e).__name__}: {e}")
         name, price = "Budget Hotel", 180.0
 
     return {
@@ -138,35 +162,76 @@ def search_hotels(state, live=False):
 
 # === 3. Check Swap ===
 def check_swap(state):
-    if state["hotel_price"] > state["budget_usd"]:
-        return {
-            "needs_swap": False,
-            "final_status": "Budget too low!",
-            "messages": [HumanMessage(content="Not enough budget. Try a cheaper destination.")]
-        }
+    """Calculate swap amount needed. Returns swap details and error messages."""
+    try:
+        hotel_price = state.get("hotel_price", 0.0)
+        budget = state.get("budget_usd", 0.0)
+        
+        if hotel_price > budget:
+            print(f"[SWAP] Budget check failed: hotel ${hotel_price} > budget ${budget}")
+            return {
+                "needs_swap": False,
+                "final_status": "Budget too low!",
+                "messages": [HumanMessage(content="Not enough budget. Try a cheaper destination.")]
+            }
 
-    swap_needed = state["hotel_price"] - (state["budget_usd"] * 0.8)
-    if swap_needed <= 0:
+        swap_needed = hotel_price - (budget * 0.8)
+        if swap_needed <= 0:
+            print(f"[SWAP] No swap needed: sufficient USD balance ({budget} > {hotel_price})")
+            return {
+                "needs_swap": False,
+                "swap_amount": 0,
+                "messages": [HumanMessage(content="You have enough USD!")]
+            }
+
+        usdc_needed = swap_needed * 1.01  # 1% buffer
+        print(f"[SWAP] Swap needed: ${usdc_needed} USDC (1% buffer included)")
+
+        return {
+            "needs_swap": True,
+            "swap_amount": round(usdc_needed, 2),
+            "messages": [HumanMessage(content=f"Swapping {round(usdc_needed, 2)} USDC → USD via 1inch")]
+        }
+    except Exception as e:
+        print(f"[ERROR] check_swap failed: {type(e).__name__}: {e}")
         return {
             "needs_swap": False,
             "swap_amount": 0,
-            "messages": [HumanMessage(content="You have enough USD!")]
+            "final_status": "Swap calculation error",
+            "messages": [HumanMessage(content="Error calculating swap. Using available balance.")]
         }
-
-    usdc_needed = swap_needed * 1.01  # 1% buffer
-
-    return {
-        "needs_swap": True,
-        "swap_amount": round(usdc_needed, 2),
-        "messages": [HumanMessage(content=f"Swapping {round(usdc_needed, 2)} USDC → USD via 1inch")]
-    }
 
 # === 4. Book ===
 def book_hotel(state):
-    return {
-        "final_status": f"Booked {state['hotel_name']} for ${state['hotel_price']}",
-        "messages": [HumanMessage(content=f"Booking confirmed on Warden! Paid with USDC. Enjoy {state['destination']}!")]
-    }
+    """Create booking confirmation. Ready for Warden on-chain integration."""
+    try:
+        hotel_name = state.get("hotel_name", "Unknown Hotel")
+        hotel_price = state.get("hotel_price", 0.0)
+        destination = state.get("destination", "Unknown")
+        swap_amount = state.get("swap_amount", 0.0)
+        
+        # Validate state before booking
+        if not hotel_name or hotel_price <= 0:
+            print(f"[ERROR] Invalid booking state: hotel_name='{hotel_name}', price=${hotel_price}")
+            return {
+                "final_status": "Invalid booking details",
+                "messages": [HumanMessage(content="Booking failed: invalid hotel details.")]
+            }
+        
+        print(f"[BOOK] Confirming booking: {hotel_name} ({destination}) for ${hotel_price}")
+        if swap_amount > 0:
+            print(f"[BOOK] Swap: ${swap_amount} USDC")
+        
+        return {
+            "final_status": f"Booked {hotel_name} for ${hotel_price}",
+            "messages": [HumanMessage(content=f"Booking confirmed on Warden! Paid with USDC. Enjoy {destination}!")]
+        }
+    except Exception as e:
+        print(f"[ERROR] book_hotel failed: {type(e).__name__}: {e}")
+        return {
+            "final_status": "Booking error",
+            "messages": [HumanMessage(content="Booking failed. Please try again.")]
+        }
 
 # === BUILD ===
 workflow = StateGraph(AgentState)
