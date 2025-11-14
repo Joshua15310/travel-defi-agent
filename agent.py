@@ -11,13 +11,29 @@ import operator
 load_dotenv()
 
 # === LLM: Grok AI ===
-llm = ChatGroq(
-    model="grok-beta",
-    api_key=os.getenv("GROK_API_KEY"),
-    temperature=0
-)
-
+GROK_KEY = os.getenv("GROK_API_KEY")
+OPENAI_KEY = os.getenv("OPENAI_API_KEY")
 BOOKING_KEY = os.getenv("BOOKING_API_KEY")
+
+# Create an LLM client if possible. Prefer Grok when configured, otherwise fall
+# back to OpenAI if available. If neither key is set, continue with None and
+# rely on the workflow's mocked fallbacks.
+llm = None
+if GROK_KEY:
+    try:
+        llm = ChatGroq(model="grok-beta", api_key=GROK_KEY, temperature=0)
+    except Exception as e:
+        print("Warning: failed to initialize ChatGroq:", type(e).__name__, str(e))
+        llm = None
+elif OPENAI_KEY:
+    try:
+        # import here to avoid requiring langchain-openai when not needed
+        from langchain_openai import ChatOpenAI
+
+        llm = ChatOpenAI(model="grok-beta", api_key=OPENAI_KEY, temperature=0)
+    except Exception as e:
+        print("Warning: failed to initialize ChatOpenAI:", type(e).__name__, str(e))
+        llm = None
 
 # === STATE ===
 class AgentState(TypedDict):
@@ -65,7 +81,7 @@ def parse_intent(state):
     }
 
 # === 2. Search Hotels on Booking.com ===
-def search_hotels(state):
+def search_hotels(state, live=False):
     url = "https://booking-com.p.rapidapi.com/v1/hotels/search"
     querystring = {
         "checkout_date": "2025-12-16",
@@ -85,16 +101,33 @@ def search_hotels(state):
         "X-RapidAPI-Host": "booking-com.p.rapidapi.com"
     }
 
+    # If not running live, skip the network call and return a mocked result
+    if not live or not BOOKING_KEY:
+        return {
+            "hotel_name": "Budget Hotel",
+            "hotel_price": 180.0,
+            "messages": [HumanMessage(content=f"Found Budget Hotel in {state.get('destination','Unknown')} for $180.0/night")]
+        }
+
     try:
-        response = requests.get(url, headers=headers, params=querystring)
-        data = response.json()
-        if data.get("result") and len(data["result"]) > 0:
-            hotel = data["result"][0]
-            name = hotel["hotel_name"]
-            price = float(hotel["price_breakdown"]["all_inclusive_price"])
-        else:
+        response = requests.get(url, headers=headers, params=querystring, timeout=10)
+        if response.status_code != 200:
+            print(f"Booking API returned {response.status_code}: {response.text}")
             name, price = "Budget Hotel", 180.0
+        else:
+            data = response.json()
+            if data.get("result") and len(data["result"]) > 0:
+                hotel = data["result"][0]
+                name = hotel.get("hotel_name", "Budget Hotel")
+                # safe extraction of price
+                try:
+                    price = float(hotel.get("price_breakdown", {}).get("all_inclusive_price", 180.0))
+                except Exception:
+                    price = 180.0
+            else:
+                name, price = "Budget Hotel", 180.0
     except Exception as e:
+        print("Booking request failed:", type(e).__name__, str(e))
         name, price = "Budget Hotel", 180.0
 
     return {
@@ -152,12 +185,90 @@ app = workflow.compile()
 
 # === TEST ===
 if __name__ == "__main__":
-    test_input = {
-        "messages": [HumanMessage(content="Book me a hotel in Tokyo under $300 using crypto")]
-    }
-    print("Crypto Travel Agent Running...\n")
-    for output in app.stream(test_input):
-        for value in output.values():
-            if "messages" in value:
-                print("Agent:", value["messages"][-1].content)
-    print("\nAgent ready for Warden Hub! Submit for $10K.")
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Crypto Travel Agent CLI")
+    parser.add_argument("cmd", nargs="?", default="test",
+                        help="Command: test|run|parse|search|swap|book|debug")
+    parser.add_argument("--message", "-m", dest="message", default=None,
+                        help="Custom user message to use instead of the default test prompt")
+    parser.add_argument("--live", action="store_true", help="Enable live API calls (must be explicit)")
+    args = parser.parse_args()
+
+    def run_workflow_once(test_input, live=False):
+        # Try streaming first; fallback to synchronous run for deterministic output
+        got_output = False
+        try:
+            for output in app.stream(test_input):
+                for value in output.values():
+                    if "messages" in value and value["messages"]:
+                        print("Agent:", value["messages"][-1].content)
+                        got_output = True
+        except Exception as e:
+            print("Streaming error:", type(e).__name__, str(e))
+
+        if not got_output:
+            # synchronous fallback
+            state = {"messages": test_input["messages"]}
+            parsed = parse_intent(state)
+            state.update(parsed)
+            print("Agent: Parsed ->", f"destination={state.get('destination')}", f"budget=${state.get('budget_usd')}")
+
+            search_res = search_hotels(state, live=live)
+            state.update(search_res)
+            if search_res.get("messages"):
+                print("Agent:", search_res["messages"][-1].content)
+
+            swap_res = check_swap(state)
+            state.update(swap_res)
+            if swap_res.get("messages"):
+                print("Agent:", swap_res["messages"][-1].content)
+
+            book_res = book_hotel(state)
+            state.update(book_res)
+            if book_res.get("messages"):
+                print("Agent:", book_res["messages"][-1].content)
+
+    # Default test input (can be overridden with --message)
+    default_message = "Book me a hotel in Tokyo under $300 using crypto"
+    user_message = args.message if args.message is not None else default_message
+    test_input = {"messages": [HumanMessage(content=user_message)]}
+
+    live_flag = args.live
+
+    cmd = args.cmd.lower()
+    if cmd == "test":
+        print("Crypto Travel Agent (test)\n")
+        run_workflow_once(test_input, live=False)
+        print("\nAgent ready for Warden Hub! Submit for $10K.")
+    elif cmd == "run":
+        print("Crypto Travel Agent (run) - live API calls enabled:" , live_flag, "\n")
+        run_workflow_once(test_input, live=live_flag)
+    elif cmd == "parse":
+        print("Parse-only:\n")
+        state = {"messages": test_input["messages"]}
+        print(parse_intent(state))
+    elif cmd == "search":
+        print("Search-only:\n")
+        state = {"messages": test_input["messages"]}
+        state.update(parse_intent(state))
+        print(search_hotels(state, live=live_flag))
+    elif cmd == "swap":
+        print("Swap-only:\n")
+        state = {"messages": test_input["messages"]}
+        state.update(parse_intent(state))
+        state.update(search_hotels(state, live=live_flag))
+        print(check_swap(state))
+    elif cmd == "book":
+        print("Book-only:\n")
+        state = {"messages": test_input["messages"]}
+        state.update(parse_intent(state))
+        state.update(search_hotels(state))
+        state.update(check_swap(state))
+        print(book_hotel(state))
+    elif cmd == "debug":
+        print("Debug: printing internal state flow\n")
+        run_workflow_once(test_input)
+        print("\n-- Done debug --")
+    else:
+        print(f"Unknown command '{cmd}'. Use one of: test, run, parse, search, swap, book, debug.")
