@@ -23,7 +23,11 @@ try:
 except Exception:
     _HAS_WARDEN_SDK = False
 
-# Testnet spend limit: $500 per booking (safety measure)
+# ============================================================================
+# GUARDRAIL: Testnet spend limit
+# ============================================================================
+# Hard limit to prevent accidental large bookings during testnet validation.
+# This is enforced in build_booking_tx() before any SDK calls are made.
 TESTNET_MAX_SPEND_USD = 500.0
 
 
@@ -69,7 +73,13 @@ class WardenBookingClient:
         Returns:
             Dict with tx data or error
         """
-        # Enforce spend limit
+        # ========================================================================
+        # GUARDRAIL ENFORCEMENT: Testnet spend limit
+        # ========================================================================
+        # Reject any booking exceeding $500 testnet max. This prevents:
+        # - Accidental large transactions during testing
+        # - Runaway swaps due to market volatility
+        # - Slippage disasters on low-liquidity testnet pairs
         if hotel_price > TESTNET_MAX_SPEND_USD:
             return {
                 "error": f"Booking exceeds testnet limit (${hotel_price} > ${TESTNET_MAX_SPEND_USD})"

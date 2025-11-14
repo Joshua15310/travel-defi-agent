@@ -144,6 +144,11 @@ def search_hotels(state, live=False):
                 # safe extraction of price
                 try:
                     price = float(hotel.get("price_breakdown", {}).get("all_inclusive_price", 180.0))
+                    # ============================================================
+                    # GUARDRAIL: Price validation (minimum bounds)
+                    # ============================================================
+                    # Reject prices < $10/night as likely data corruption or
+                    # API errors (impossible hotel rates indicate bad data).
                     if price < 10:
                         print(f"[WARN] Suspicious price ${price}. Using default $180.0")
                         price = 180.0
@@ -155,6 +160,11 @@ def search_hotels(state, live=False):
                 print("[SEARCH] No results from API. Using mocked fallback.")
                 name, price = "Budget Hotel", 180.0
     except requests.Timeout:
+        # ======================================================================
+        # GUARDRAIL: API timeout protection
+        # ======================================================================
+        # 10-second timeout prevents hanging on unresponsive external APIs.
+        # Gracefully falls back to mocked hotel.
         print("[ERROR] Booking API request timed out (>10s). Using mocked fallback.")
         name, price = "Budget Hotel", 180.0
     except Exception as e:
@@ -169,11 +179,22 @@ def search_hotels(state, live=False):
 
 # === 3. Check Swap ===
 def check_swap(state):
-    """Calculate swap amount needed. Returns swap details and error messages."""
+    """Calculate swap amount needed. Returns swap details and error messages.
+    
+    GUARDRAILS ENFORCED:
+    - Budget validation: Rejects if hotel_price > budget_usd
+    - Slippage protection: Adds 1% buffer to swap amount
+    - Rounding: All amounts rounded to 2 decimals (cent precision)
+    """
     try:
         hotel_price = state.get("hotel_price", 0.0)
         budget = state.get("budget_usd", 0.0)
         
+        # ====================================================================
+        # GUARDRAIL: User budget enforcement
+        # ====================================================================
+        # Reject bookings that exceed the user's stated budget. Prevents
+        # overspendings and ensures user intent is respected.
         if hotel_price > budget:
             print(f"[SWAP] Budget check failed: hotel ${hotel_price} > budget ${budget}")
             return {
@@ -191,7 +212,14 @@ def check_swap(state):
                 "messages": [HumanMessage(content="You have enough USD!")]
             }
 
-        usdc_needed = swap_needed * 1.01  # 1% buffer
+        # ====================================================================
+        # GUARDRAIL: Slippage protection (1% buffer)
+        # ====================================================================
+        # Add 1% buffer to swap amount to account for:
+        # - Market price movement during transaction confirmation
+        # - Exchange/routing fees
+        # - Liquidity depth on testnet/mainnet
+        usdc_needed = swap_needed * 1.01
         print(f"[SWAP] Swap needed: ${usdc_needed} USDC (1% buffer included)")
 
         return {
