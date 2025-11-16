@@ -3,4 +3,4 @@ langchain
 langsmith
 requests
 python-dotenv
-langchain-openai
+google-generativeai
