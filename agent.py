@@ -1,16 +1,14 @@
 # agent.py - Crypto Travel Booker
 # Orchestrates the booking flow using LangGraph workflow_app
 # This file focuses on node implementations and CLI entry point.
-
-from langchain_core.messages import HumanMessage
-from langchain_groq import ChatGroq
 import requests
 import os
 from dotenv import load_dotenv
-from typing import TypedDict, Annotated
 import operator
 
 load_dotenv()
+import google.generativeai as genai
+from langchain_core.messages import HumanMessage
 
 # === IMPORTS ===
 # Import graph builder and state (workflow app will be built at end of file)
@@ -18,75 +16,71 @@ from workflow.graph import build_workflow, AgentState
 
 # === LLM: Grok AI ===
 GROK_KEY = os.getenv("GROK_API_KEY")
-OPENAI_KEY = os.getenv("OPENAI_API_KEY")
+GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 BOOKING_KEY = os.getenv("BOOKING_API_KEY")
 
-# Create an LLM client if possible. Prefer Grok when configured, otherwise fall
-# back to OpenAI if available. If neither key is set, continue with None and
-# rely on the workflow's mocked fallbacks.
+# Create a Gemini client if possible.
 llm = None
-if GROK_KEY:
+if GEMINI_KEY:
     try:
-        llm = ChatGroq(model="grok-beta", api_key=GROK_KEY, temperature=0)
+        genai.configure(api_key=GEMINI_KEY)
+        llm = genai.GenerativeModel('gemini-1.5-flash')
     except Exception as e:
-        print("Warning: failed to initialize ChatGroq:", type(e).__name__, str(e))
-        llm = None
-elif OPENAI_KEY:
-    try:
-        # import here to avoid requiring langchain-openai when not needed
-        from langchain_openai import ChatOpenAI
-
-        llm = ChatOpenAI(model="grok-beta", api_key=OPENAI_KEY, temperature=0)
-    except Exception as e:
-        print("Warning: failed to initialize ChatOpenAI:", type(e).__name__, str(e))
+        print(f"Warning: failed to initialize Gemini SDK: {type(e).__name__}: {e}")
         llm = None
 
 # === STATE ===
-class AgentState(TypedDict):
-    messages: Annotated[list, operator.add]
-    user_query: str
-    destination: str
-    budget_usd: float
-    hotel_name: str
-    hotel_price: float
-    needs_swap: bool
-    swap_amount: float
-    final_status: str
-    tx_hash: str  # For Warden transaction hash
+# The AgentState is now defined in workflow/graph.py to avoid circular imports.
 
 # === 1. Parse User (FIXED: handles "in", "to", "at") ===
 def parse_intent(state):
     """Parse user intent from message. Extracts destination and budget."""
     try:
-        query = state["messages"][-1].content.lower()
+        query = state["messages"][-1].content
         destination = "Paris"
         budget = 400.0
 
-        # Find destination after "to", "in", "at"
-        markers = ["to ", "in ", "at "]
-        dest_part = query
-        for marker in markers:
-            if marker in query:
-                dest_part = query.split(marker, 1)[-1]
-                break
+        if llm:
+            prompt = f"""
+            Extract the destination city and the maximum budget in USD from the following user query.
+            Provide the output as a JSON object with two keys: "destination" (string) and "budget_usd" (float).
+            If a value is not found, use a default of "Paris" for the destination and 400.0 for the budget.
 
-        # Extract first word as city
-        words = dest_part.strip().split()
-        if words:
-            destination = words[0].capitalize()
-
-        # Extract budget after $
-        if "$" in query:
+            User Query: "{query}"
+            """
             try:
-                budget_str = query.split("$")[-1]
-                budget = float(''.join(filter(str.isdigit, budget_str.split()[0])))
+                response = llm.generate_content(prompt)
+                # Clean the response to ensure it's valid JSON
+                cleaned_response = response.text.strip().replace("```json", "").replace("```", "")
+                import json
+                parsed = json.loads(cleaned_response)
+                destination = parsed.get("destination", "Paris")
+                budget = float(parsed.get("budget_usd", 400.0))
             except Exception as e:
-                print(f"[WARN] Failed to parse budget from '{budget_str}': {e}. Using default $400")
-                pass
+                print(f"[WARN] Gemini parsing failed: {e}. Using default values.")
+        else:
+            print("[WARN] LLM not available. Using simple rule-based parsing.")
+            # Fallback to the original rule-based parsing if LLM is not configured
+            lower_query = query.lower()
+            markers = ["to ", "in ", "at "]
+            dest_part = lower_query
+            for marker in markers:
+                if marker in lower_query:
+                    dest_part = lower_query.split(marker, 1)[-1]
+                    break
+            words = dest_part.strip().split()
+            if words:
+                destination = words[0].capitalize()
+            if "$" in lower_query:
+                try:
+                    budget_str = lower_query.split("$")[-1]
+                    budget = float(''.join(filter(str.isdigit, budget_str.split()[0])))
+                except Exception:
+                    pass # Use default budget
 
         print(f"[PARSE] Extracted destination='{destination}', budget=${budget}")
         return {
-            "user_query": query,
+            "user_query": query.lower(),
             "destination": destination,
             "budget_usd": budget
         }
