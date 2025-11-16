@@ -229,8 +229,8 @@ BOOKING_API_URL=https://booking-com.p.rapidapi.com
 BOOKING_API_HOST=booking-com.p.rapidapi.com
 
 # LLM
-GROK_API_KEY=...
-OPENAI_API_KEY=sk-...
+# Use the Gemini 1.5 Flash model
+GEMINI_API_KEY=...
 
 # 1inch (swap quotes)
 ONEINCH_API_KEY=...  # Optional; agent works without it
@@ -280,15 +280,15 @@ chmod +x run-agent-production.sh
 
 ## Tech Stack
 | Component | Tool |
-|---------|------|
-| AI Brain | **Grok-beta (xAI)** ← *Official xAI model* |
+|-----------|------------------------------------------|
+| AI Brain | **Gemini 1.5 Flash (Google AI)** |
 | Hotel Data | **Booking.com API** |
 | Crypto Swap | **1inch API logic** |
 | On-Chain | **Warden Protocol** (Space-ready) |
 | Workflow | **LangGraph** (state machine with tracing) |
 | Language | Python |
 
-> **Powered by Grok AI (xAI) — fully aligned with Warden & xAI ecosystem**
+> **Powered by Google's Gemini 1.5 Flash model for state-of-the-art intent parsing.**
 
 ---
 
@@ -442,4 +442,3 @@ python agent.py run --live -m "Book me a hotel in Tokyo under $300"
 **GitHub:** https://github.com/Joshua15310/travel-defi-agent
 
 ---
-
