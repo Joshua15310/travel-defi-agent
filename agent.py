@@ -14,8 +14,7 @@ from langchain_core.messages import HumanMessage
 # Import graph builder and state (workflow app will be built at end of file)
 from workflow.graph import build_workflow, AgentState
 
-# === LLM: Grok AI ===
-GROK_KEY = os.getenv("GROK_API_KEY")
+# === API Keys & LLM Configuration ===
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 BOOKING_KEY = os.getenv("BOOKING_API_KEY")
 
