@@ -1,10 +1,33 @@
 # agent.py - Crypto Travel Booker
 # Orchestrates the booking flow using LangGraph workflow_app
 # This file focuses on node implementations and CLI entry point.
-import requests
 import os
 from dotenv import load_dotenv
+
+import os
+from dotenv import load_dotenv
+import requests  
+
+# === PASTE THE 1INCH FUNCTION HERE ===
+def get_1inch_quote(amount_usdc: float, chain_id: int = 8453) -> dict:
+    """Get real 1inch quote: USDC → USD (on Base chain)"""
+    url = f"https://api.1inch.dev/swap/v6.0/{chain_id}/quote"
+    params = {
+        "src": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",  # USDC on Base
+        "dst": "0x0000000000000000000000000000000000000000",  # Native ETH (USD proxy)
+        "amount": str(int(amount_usdc * 1e6))  # USDC has 6 decimals
+    }
+    try:
+        response = requests.get(url, params=params, headers={"accept": "application/json"})
+        return response.json() if response.status_code == 200 else {"error": response.text}
+    except:
+        return {"error": "1inch API failed"}
+# === END OF 1INCH FUNCTION ===
+
 import operator
+
+# Import the actual Warden client function
+from warden_client import submit_booking
 
 load_dotenv()
 import google.generativeai as genai
@@ -213,12 +236,21 @@ def check_swap(state):
         # - Exchange/routing fees
         # - Liquidity depth on testnet/mainnet
         usdc_needed = swap_needed * 1.01
-        print(f"[SWAP] Swap needed: ${usdc_needed} USDC (1% buffer included)")
+        print(f"[SWAP] Swap needed: ${usdc_needed:.2f} USDC (1% buffer included)")
+
+        # Real 1inch quote
+        quote = get_1inch_quote(usdc_needed)
+        if "error" not in quote:
+            # The amount of ETH we will get from the swap
+            eth_out = float(quote.get('toAmount', 0)) / 1e18
+            agent_message = f"Swapping {round(usdc_needed, 2):.2f} USDC for ~{eth_out:.6f} ETH via 1inch."
+        else:
+            agent_message = f"Swapping {round(usdc_needed, 2):.2f} USDC -> USD via 1inch. (Quote failed: {quote['error']})"
 
         return {
             "needs_swap": True,
             "swap_amount": round(usdc_needed, 2),
-            "messages": [HumanMessage(content=f"Swapping {round(usdc_needed, 2)} USDC → USD via 1inch")]
+            "messages": [HumanMessage(content=agent_message)]
         }
     except Exception as e:
         print(f"[ERROR] check_swap failed: {type(e).__name__}: {e}")
@@ -256,28 +288,23 @@ def book_hotel(state):
         if swap_amount > 0:
             print(f"[BOOK] Swap: ${swap_amount} USDC")
 
-        # Attempt on-chain booking through Warden wrapper
-        try:
-            from warden_client import submit_booking
-            result = submit_booking(hotel_name, hotel_price, destination, swap_amount)
-            if result.get("tx_hash"):
-                tx = result["tx_hash"]
-                print(f"[BOOK] Warden tx: {tx}")
-                return {
-                    "final_status": f"Booked {hotel_name} for ${hotel_price}",
-                    "tx_hash": tx,
-                    "messages": [HumanMessage(content=f"Booking confirmed on Warden! Paid with USDC. Enjoy {destination}!")]
-                }
-            else:
-                print(f"[BOOK] Warden returned error: {result.get('error')}")
-        except Exception as e:
-            print(f"[WARN] Warden booking attempt failed: {type(e).__name__}: {e}")
+        # Attempt on-chain booking through the warden_client
+        result = submit_booking(hotel_name, hotel_price, destination, swap_amount)
 
-        # Fallback confirmation (mock)
-        return {
-            "final_status": f"Booked {hotel_name} for ${hotel_price}",
-            "messages": [HumanMessage(content=f"Booking confirmed on Warden! Paid with USDC. Enjoy {destination}!")]
-        }
+        if result.get("tx_hash"):
+            tx = result["tx_hash"]
+            print(f"[BOOK] Warden tx: {tx}")
+            agent_message = f"Booking confirmed on Warden! Paid with USDC. Enjoy {destination}!\nTransaction: {tx}"
+            return {
+                "final_status": f"Booked {hotel_name} for ${hotel_price}",
+                "tx_hash": tx,
+                "messages": [HumanMessage(content=agent_message)]
+            }
+        else:
+            # Fallback if warden_client returns an error
+            error_message = result.get("error", "An unknown error occurred.")
+            print(f"[BOOK] Warden returned error: {error_message}")
+            return {"final_status": f"Booking failed: {error_message}"}
     except Exception as e:
         print(f"[ERROR] book_hotel failed: {type(e).__name__}: {e}")
         return {
