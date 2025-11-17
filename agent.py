@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 
 import os
 from dotenv import load_dotenv
-import requests  
+import requests 
 
 # === PASTE THE 1INCH FUNCTION HERE ===
 def get_1inch_quote(amount_usdc: float, chain_id: int = 8453) -> dict:
