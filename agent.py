@@ -29,24 +29,26 @@ import operator
 # Import the actual Warden client function
 from warden_client import submit_booking
 
-load_dotenv()
-import google.generativeai as genai
-from langchain_core.messages import HumanMessage
-
 # === IMPORTS ===
 # Import graph builder and state (workflow app will be built at end of file)
 from workflow.graph import build_workflow, AgentState
+from langchain_core.messages import HumanMessage
+from langchain_groq import ChatGroq
+
+load_dotenv()
 
 # === API Keys & LLM Configuration ===
-GEMINI_KEY = os.getenv("GEMINI_API_KEY")
+GROK_API_KEY = os.getenv("GROK_API_KEY")
 BOOKING_KEY = os.getenv("BOOKING_API_KEY")
 
-# Create a Gemini client if possible.
+# Create a Grok client if possible.
 llm = None
-if GEMINI_KEY:
+if GROK_API_KEY:
     try:
-        genai.configure(api_key=GEMINI_KEY)
-        llm = genai.GenerativeModel('gemini-1.5-flash')
+        llm = ChatGroq(
+            api_key=GROK_API_KEY,
+            model="llama3-8b-8192"
+        )
     except Exception as e:
         print(f"Warning: failed to initialize Gemini SDK: {type(e).__name__}: {e}")
         llm = None
@@ -71,15 +73,15 @@ def parse_intent(state):
             User Query: "{query}"
             """
             try:
-                response = llm.generate_content(prompt)
+                response = llm.invoke(prompt)
                 # Clean the response to ensure it's valid JSON
-                cleaned_response = response.text.strip().replace("```json", "").replace("```", "")
+                cleaned_response = response.content.strip().replace("```json", "").replace("```", "")
                 import json
                 parsed = json.loads(cleaned_response)
                 destination = parsed.get("destination", "Paris")
                 budget = float(parsed.get("budget_usd", 400.0))
             except Exception as e:
-                print(f"[WARN] Gemini parsing failed: {e}. Using default values.")
+                print(f"[WARN] Grok parsing failed: {e}. Using default values.")
         else:
             print("[WARN] LLM not available. Using simple rule-based parsing.")
             # Fallback to the original rule-based parsing if LLM is not configured
