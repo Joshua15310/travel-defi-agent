@@ -26,8 +26,8 @@ def get_1inch_quote(amount_usdc: float, chain_id: int = 8453) -> dict:
 
 import operator
 
-# Import the actual Warden client function
-from warden_client import submit_booking
+# Import the actual Warden client module (import the module so tests can monkeypatch it)
+import warden_client
 
 # === IMPORTS ===
 # Import graph builder and state (workflow app will be built at end of file)
@@ -291,7 +291,7 @@ def book_hotel(state):
             print(f"[BOOK] Swap: ${swap_amount} USDC")
 
         # Attempt on-chain booking through the warden_client
-        result = submit_booking(hotel_name, hotel_price, destination, swap_amount)
+        result = warden_client.submit_booking(hotel_name, hotel_price, destination, swap_amount)
 
         if result.get("tx_hash"):
             tx = result["tx_hash"]
