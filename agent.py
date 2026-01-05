@@ -48,7 +48,7 @@ from langchain_openai import ChatOpenAI
 if GROK_API_KEY:
     try:
         llm = ChatOpenAI(
-            model="grok-beta",  # Or "grok-2-1212"
+            model="grok-3",  # Or "grok-2-1212"
             openai_api_key=GROK_API_KEY,
             openai_api_base="https://api.x.ai/v1"
         )
