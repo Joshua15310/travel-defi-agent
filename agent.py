@@ -53,6 +53,13 @@ if GROK_API_KEY:
 
 # === 1. Parse User ===
 def parse_intent(state):
+    state.setdefault("destination", "unknown")
+    state.setdefault("budget_usd", 0.0)
+    state.setdefault("hotel_name", "none")
+    state.setdefault("hotel_price", 0.0)
+    state.setdefault("needs_swap", False)
+    state.setdefault("swap_amount", 0.0)
+
     """Parse user intent from message. Extracts destination and budget."""
     try:
         query = state["messages"][-1].content
