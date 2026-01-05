@@ -11,6 +11,7 @@ import warden_client
 from workflow.graph import build_workflow, AgentState
 from langchain_core.messages import HumanMessage
 from langchain_openai import ChatOpenAI
+from datetime import date, timedelta
 
 load_dotenv()
 
@@ -119,11 +120,10 @@ def parse_intent(state):
         }
 
 # === 2. Search Hotels on Booking.com ===
-def search_hotels(state, live=True):  # <--- CHANGED DEFAULT TO TRUE
+def search_hotels(state, live=True):
     """Search for hotels on Booking.com. Falls back to mocked result on error."""
     
-    # Logic Update: If we have a key, we try to go live.
-    # We remove the strict 'live' flag dependency so the Server works automatically.
+    # 1. Check for API Key
     if not BOOKING_KEY:
         print(f"[SEARCH] No API key found. Using mocked fallback: Budget Hotel, $180.0")
         return {
@@ -132,17 +132,23 @@ def search_hotels(state, live=True):  # <--- CHANGED DEFAULT TO TRUE
             "messages": [HumanMessage(content=f"Found Budget Hotel in {state.get('destination','Unknown')} for $180.0/night")]
         }
 
+    # 2. Calculate Dates (Tomorrow & Day After)
+    tomorrow = date.today() + timedelta(days=1)
+    next_day = date.today() + timedelta(days=2)
+
     url = "https://booking-com.p.rapidapi.com/v1/hotels/search"
+    
+    # 3. Build Query with Future Dates
     querystring = {
-        "checkout_date": "2025-12-16",
+        "checkout_date": next_day.strftime("%Y-%m-%d"),
         "units": "metric",
-        "dest_id": "-1746443",  # Paris (we'll improve later)
+        "dest_id": "-1746443",  # Paris (default)
         "dest_type": "city",
         "locale": "en-gb",
         "adults_number": "1",
         "order_by": "price",
         "filter_by_currency": "USD",
-        "checkin_date": "2025-12-15",
+        "checkin_date": tomorrow.strftime("%Y-%m-%d"),
         "room_number": "1"
     }
 
