@@ -1,8 +1,17 @@
 from fastapi import FastAPI, Request
-# FIX: Import 'workflow_app' but rename it to 'graph' for this file
-from agent import workflow_app as graph 
+from fastapi.middleware.cors import CORSMiddleware
+from agent import workflow_app as graph
 
 app = FastAPI()
+
+# 1. ADD CORS PERMISSIONS (Critical for the Vercel Tester)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows all origins
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all methods
+    allow_headers=["*"],  # Allows all headers
+)
 
 @app.get("/")
 def read_root():
@@ -11,14 +20,27 @@ def read_root():
 @app.post("/chat")
 async def chat_endpoint(request: Request):
     data = await request.json()
-    user_input = data.get("message", "")
+    
+    # 2. HANDLE INPUT FLEXIBILITY
+    # The Tester sends "messages" (list), but simple tests send "message" (string)
+    if "messages" in data:
+        # If the tester sends a list of messages, use it directly
+        user_input = data["messages"]
+    else:
+        # If it's a simple test, format it as a user message
+        user_input = [("user", data.get("message", ""))]
     
     # Run the agent
-    # We use 'graph' here because we aliased it in the import above
-    result = await graph.ainvoke({"messages": [("user", user_input)]})
+    result = await graph.ainvoke({"messages": user_input})
     
-    # Extract the last message content
-    # This logic assumes your agent adds the final response to the 'messages' list
+    # Extract the last response
     last_message = result["messages"][-1].content
     
-    return {"response": last_message}
+    # 3. RETURN FORMAT
+    # Return in a format the Tester likely understands (JSON with 'messages')
+    return {
+        "messages": [
+            {"type": "ai", "content": last_message}
+        ],
+        "response": last_message # Keep this for backward compatibility
+    }
