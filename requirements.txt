@@ -4,4 +4,4 @@ langsmith
 requests
 python-dotenv
 google-generativeai
-langchain_groq
+langchain_openai
