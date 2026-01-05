@@ -33,7 +33,6 @@ import warden_client
 # Import graph builder and state (workflow app will be built at end of file)
 from workflow.graph import build_workflow, AgentState
 from langchain_core.messages import HumanMessage
-from langchain_groq import ChatGroq
 
 load_dotenv()
 
