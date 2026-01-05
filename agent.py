@@ -42,15 +42,20 @@ GROK_API_KEY = os.getenv("GROK_API_KEY")
 BOOKING_KEY = os.getenv("BOOKING_API_KEY")
 
 # Create a Grok client if possible.
-llm = None
+# Add this import at the top
+from langchain_openai import ChatOpenAI
+
+# ... inside the initialization block ...
 if GROK_API_KEY:
     try:
-        llm = ChatGroq(
-            api_key=GROK_API_KEY,
-            model="llama3-8b-8192"
+        llm = ChatOpenAI(
+            model="grok-beta",  # Or "grok-2-1212"
+            openai_api_key=GROK_API_KEY,
+            openai_api_base="https://api.x.ai/v1"
         )
+        print("[INIT] Connected to xAI (Grok) successfully.")
     except Exception as e:
-        print(f"Warning: failed to initialize Gemini SDK: {type(e).__name__}: {e}")
+        print(f"Warning: failed to initialize xAI: {e}")
         llm = None
 
 # === STATE ===
