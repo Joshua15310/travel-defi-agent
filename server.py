@@ -1,7 +1,9 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
 from langserve import add_routes
 from langchain_core.runnables import RunnableLambda
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from agent import workflow_app as graph
 
 app = FastAPI(
@@ -10,7 +12,7 @@ app = FastAPI(
     description="A LangGraph agent hosted on Render"
 )
 
-# 1. CORS - Allow Vercel to connect
+# 1. CORS - ALLOW VERCEL (Critical)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -19,18 +21,37 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 2. THE TRANSLATOR (Fixes the Vercel Error)
-# This function automatically fills in the missing "Form Fields" 
-# that the Vercel tester doesn't know about.
+# 2. THE WELCOME MAT (Fixes the "404" Error)
+# When Vercel pings the root "/", we say "Yes, I'm here!"
+@app.get("/")
+def redirect_to_docs():
+    return {"status": "Travel Agent is Live", "service": "LangGraph"}
+
+# 3. HELPER: Convert Vercel's simple JSON to LangChain Objects
+def convert_messages(messages):
+    converted = []
+    for m in messages:
+        if isinstance(m, dict):
+            role = m.get("role", "user")
+            content = m.get("content", "")
+            if role == "user":
+                converted.append(HumanMessage(content=content))
+            elif role == "assistant":
+                converted.append(AIMessage(content=content))
+            else:
+                converted.append(SystemMessage(content=content))
+        else:
+            converted.append(m)
+    return converted
+
+# 4. THE ADAPTER (Fixes the "Missing Form Fields" Crash)
 def input_adapter(input_data: dict) -> dict:
-    # Get the messages (or empty list if missing)
-    messages = input_data.get("messages", [])
+    raw_messages = input_data.get("messages", [])
+    safe_messages = convert_messages(raw_messages)
     
-    # Return the FULL state structure your agent demands
     return {
-        "messages": messages,
-        "user_query": messages[-1].content if messages else "",
-        # Fill required fields with safe defaults so the agent doesn't crash
+        "messages": safe_messages,
+        # Default values to satisfy the agent's strict requirements
         "destination": "unknown", 
         "budget_usd": 0.0,
         "hotel_name": "none",
@@ -39,14 +60,13 @@ def input_adapter(input_data: dict) -> dict:
         "swap_amount": 0.0
     }
 
-# Chain the translator to your graph
-# Logic: Receive Simple Input -> Add Defaults -> Run Agent
+# 5. Connect the pieces
 compatible_model = RunnableLambda(input_adapter) | graph
 
-# 3. Add Routes
+# 6. Add Routes at "/agent"
 add_routes(
     app,
-    compatible_model, # Use the compatible model, not the raw graph
+    compatible_model,
     path="/agent",
 )
 
