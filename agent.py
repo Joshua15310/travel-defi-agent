@@ -119,8 +119,19 @@ def parse_intent(state):
         }
 
 # === 2. Search Hotels on Booking.com ===
-def search_hotels(state, live=False):
+def search_hotels(state, live=True):  # <--- CHANGED DEFAULT TO TRUE
     """Search for hotels on Booking.com. Falls back to mocked result on error."""
+    
+    # Logic Update: If we have a key, we try to go live.
+    # We remove the strict 'live' flag dependency so the Server works automatically.
+    if not BOOKING_KEY:
+        print(f"[SEARCH] No API key found. Using mocked fallback: Budget Hotel, $180.0")
+        return {
+            "hotel_name": "Budget Hotel",
+            "hotel_price": 180.0,
+            "messages": [HumanMessage(content=f"Found Budget Hotel in {state.get('destination','Unknown')} for $180.0/night")]
+        }
+
     url = "https://booking-com.p.rapidapi.com/v1/hotels/search"
     querystring = {
         "checkout_date": "2025-12-16",
@@ -140,17 +151,8 @@ def search_hotels(state, live=False):
         "X-RapidAPI-Host": "booking-com.p.rapidapi.com"
     }
 
-    # If not running live, skip the network call and return a mocked result
-    if not live or not BOOKING_KEY:
-        print(f"[SEARCH] Live mode disabled or no API key. Using mocked fallback: Budget Hotel, $180.0")
-        return {
-            "hotel_name": "Budget Hotel",
-            "hotel_price": 180.0,
-            "messages": [HumanMessage(content=f"Found Budget Hotel in {state.get('destination','Unknown')} for $180.0/night")]
-        }
-
     try:
-        print(f"[SEARCH] Querying Booking.com API for '{state.get('destination', 'Unknown')}'...")
+        print(f"[SEARCH] Live Query to Booking.com for '{state.get('destination', 'Unknown')}'...")
         response = requests.get(url, headers=headers, params=querystring, timeout=10)
         
         if response.status_code != 200:
@@ -161,30 +163,24 @@ def search_hotels(state, live=False):
             if data.get("result") and len(data["result"]) > 0:
                 hotel = data["result"][0]
                 name = hotel.get("hotel_name", "Budget Hotel")
-                # safe extraction of price
                 try:
                     price = float(hotel.get("price_breakdown", {}).get("all_inclusive_price", 180.0))
                     if price < 10:
-                        print(f"[WARN] Suspicious price ${price}. Using default $180.0")
                         price = 180.0
-                except Exception as e:
-                    print(f"[WARN] Failed to parse price: {e}. Using default $180.0")
+                except Exception:
                     price = 180.0
-                print(f"[SEARCH] Found {name} for ${price}/night")
+                print(f"[SEARCH] Success! Found {name} for ${price}/night")
             else:
                 print("[SEARCH] No results from API. Using mocked fallback.")
                 name, price = "Budget Hotel", 180.0
-    except requests.Timeout:
-        print("[ERROR] Booking API request timed out (>10s). Using mocked fallback.")
-        name, price = "Budget Hotel", 180.0
     except Exception as e:
-        print(f"[ERROR] search_hotels failed: {type(e).__name__}: {e}")
+        print(f"[ERROR] Live search failed: {e}")
         name, price = "Budget Hotel", 180.0
 
     return {
         "hotel_name": name,
         "hotel_price": price,
-        "messages": [HumanMessage(content=f"Found {name} in {state['destination']} for ${price}/night")]
+        "messages": [HumanMessage(content=f"Found {name} in {state.get('destination', 'Unknown')} for ${price}/night")]
     }
 
 # === 3. Check Swap ===
