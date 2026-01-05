@@ -7,3 +7,4 @@ google-generativeai
 langchain_openai
 fastapi
 uvicorn
+langserve[all]

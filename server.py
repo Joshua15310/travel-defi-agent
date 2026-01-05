@@ -1,46 +1,31 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from langserve import add_routes
 from agent import workflow_app as graph
 
-app = FastAPI()
-
-# 1. ADD CORS PERMISSIONS (Critical for the Vercel Tester)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # Allows all origins
-    allow_credentials=True,
-    allow_methods=["*"],  # Allows all methods
-    allow_headers=["*"],  # Allows all headers
+app = FastAPI(
+    title="Travel DeFi Agent",
+    version="1.0",
+    description="A LangGraph agent hosted on Render"
 )
 
-@app.get("/")
-def read_root():
-    return {"status": "Travel DeFi Agent is running"}
+# 1. CORS - Allow everyone to talk to us (Critical for Vercel/Warden)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-@app.post("/chat")
-async def chat_endpoint(request: Request):
-    data = await request.json()
-    
-    # 2. HANDLE INPUT FLEXIBILITY
-    # The Tester sends "messages" (list), but simple tests send "message" (string)
-    if "messages" in data:
-        # If the tester sends a list of messages, use it directly
-        user_input = data["messages"]
-    else:
-        # If it's a simple test, format it as a user message
-        user_input = [("user", data.get("message", ""))]
-    
-    # Run the agent
-    result = await graph.ainvoke({"messages": user_input})
-    
-    # Extract the last response
-    last_message = result["messages"][-1].content
-    
-    # 3. RETURN FORMAT
-    # Return in a format the Tester likely understands (JSON with 'messages')
-    return {
-        "messages": [
-            {"type": "ai", "content": last_message}
-        ],
-        "response": last_message # Keep this for backward compatibility
-    }
+# 2. Add LangServe Routes
+# This automatically creates /agent/invoke, /agent/stream, /agent/playground
+add_routes(
+    app,
+    graph,
+    path="/agent",
+)
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
