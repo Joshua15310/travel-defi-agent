@@ -3,10 +3,16 @@
 # This file focuses on node implementations and CLI entry point.
 import os
 from dotenv import load_dotenv
+import requests
+import operator
+import warden_client
 
-import os
-from dotenv import load_dotenv
-import requests 
+# === IMPORTS ===
+from workflow.graph import build_workflow, AgentState
+from langchain_core.messages import HumanMessage
+from langchain_openai import ChatOpenAI
+
+load_dotenv()
 
 # === PASTE THE 1INCH FUNCTION HERE ===
 def get_1inch_quote(amount_usdc: float, chain_id: int = 8453) -> dict:
@@ -24,31 +30,16 @@ def get_1inch_quote(amount_usdc: float, chain_id: int = 8453) -> dict:
         return {"error": "1inch API failed"}
 # === END OF 1INCH FUNCTION ===
 
-import operator
-
-# Import the actual Warden client module (import the module so tests can monkeypatch it)
-import warden_client
-
-# === IMPORTS ===
-# Import graph builder and state (workflow app will be built at end of file)
-from workflow.graph import build_workflow, AgentState
-from langchain_core.messages import HumanMessage
-
-load_dotenv()
-
 # === API Keys & LLM Configuration ===
 GROK_API_KEY = os.getenv("GROK_API_KEY")
 BOOKING_KEY = os.getenv("BOOKING_API_KEY")
 
 # Create a Grok client if possible.
-# Add this import at the top
-from langchain_openai import ChatOpenAI
-
-# ... inside the initialization block ...
+llm = None
 if GROK_API_KEY:
     try:
         llm = ChatOpenAI(
-            model="grok-3",  # Or "grok-2-1212"
+            model="grok-3",  # Updated to use the correct model
             openai_api_key=GROK_API_KEY,
             openai_api_base="https://api.x.ai/v1"
         )
@@ -60,7 +51,7 @@ if GROK_API_KEY:
 # === STATE ===
 # The AgentState is now defined in workflow/graph.py to avoid circular imports.
 
-# === 1. Parse User (FIXED: handles "in", "to", "at") ===
+# === 1. Parse User ===
 def parse_intent(state):
     """Parse user intent from message. Extracts destination and budget."""
     try:
@@ -166,11 +157,6 @@ def search_hotels(state, live=False):
                 # safe extraction of price
                 try:
                     price = float(hotel.get("price_breakdown", {}).get("all_inclusive_price", 180.0))
-                    # ============================================================
-                    # GUARDRAIL: Price validation (minimum bounds)
-                    # ============================================================
-                    # Reject prices < $10/night as likely data corruption or
-                    # API errors (impossible hotel rates indicate bad data).
                     if price < 10:
                         print(f"[WARN] Suspicious price ${price}. Using default $180.0")
                         price = 180.0
@@ -182,11 +168,6 @@ def search_hotels(state, live=False):
                 print("[SEARCH] No results from API. Using mocked fallback.")
                 name, price = "Budget Hotel", 180.0
     except requests.Timeout:
-        # ======================================================================
-        # GUARDRAIL: API timeout protection
-        # ======================================================================
-        # 10-second timeout prevents hanging on unresponsive external APIs.
-        # Gracefully falls back to mocked hotel.
         print("[ERROR] Booking API request timed out (>10s). Using mocked fallback.")
         name, price = "Budget Hotel", 180.0
     except Exception as e:
@@ -201,22 +182,11 @@ def search_hotels(state, live=False):
 
 # === 3. Check Swap ===
 def check_swap(state):
-    """Calculate swap amount needed. Returns swap details and error messages.
-    
-    GUARDRAILS ENFORCED:
-    - Budget validation: Rejects if hotel_price > budget_usd
-    - Slippage protection: Adds 1% buffer to swap amount
-    - Rounding: All amounts rounded to 2 decimals (cent precision)
-    """
+    """Calculate swap amount needed. Returns swap details and error messages."""
     try:
         hotel_price = state.get("hotel_price", 0.0)
         budget = state.get("budget_usd", 0.0)
         
-        # ====================================================================
-        # GUARDRAIL: User budget enforcement
-        # ====================================================================
-        # Reject bookings that exceed the user's stated budget. Prevents
-        # overspendings and ensures user intent is respected.
         if hotel_price > budget:
             print(f"[SWAP] Budget check failed: hotel ${hotel_price} > budget ${budget}")
             return {
@@ -234,20 +204,11 @@ def check_swap(state):
                 "messages": [HumanMessage(content="You have enough USD!")]
             }
 
-        # ====================================================================
-        # GUARDRAIL: Slippage protection (1% buffer)
-        # ====================================================================
-        # Add 1% buffer to swap amount to account for:
-        # - Market price movement during transaction confirmation
-        # - Exchange/routing fees
-        # - Liquidity depth on testnet/mainnet
         usdc_needed = swap_needed * 1.01
         print(f"[SWAP] Swap needed: ${usdc_needed:.2f} USDC (1% buffer included)")
 
-        # Real 1inch quote
         quote = get_1inch_quote(usdc_needed)
         if "error" not in quote:
-            # The amount of ETH we will get from the swap
             eth_out = float(quote.get('toAmount', 0)) / 1e18
             agent_message = f"Swapping {round(usdc_needed, 2):.2f} USDC for ~{eth_out:.6f} ETH via 1inch."
         else:
@@ -269,20 +230,13 @@ def check_swap(state):
 
 # === 4. Book ===
 def book_hotel(state):
-    """Create booking confirmation. Attempt to perform on-chain booking via Warden.
-
-    This function uses `warden_client.submit_booking` to perform the
-    on-chain action when available and configured; otherwise it falls back
-    to a mocked confirmation. The return value includes `tx_hash` when an
-    on-chain submission occurred (or the mocked tx hash).
-    """
+    """Create booking confirmation. Attempt to perform on-chain booking via Warden."""
     try:
         hotel_name = state.get("hotel_name", "Unknown Hotel")
         hotel_price = state.get("hotel_price", 0.0)
         destination = state.get("destination", "Unknown")
         swap_amount = state.get("swap_amount", 0.0)
 
-        # Validate state before booking
         if not hotel_name or hotel_price <= 0:
             print(f"[ERROR] Invalid booking state: hotel_name='{hotel_name}', price=${hotel_price}")
             return {
@@ -294,7 +248,6 @@ def book_hotel(state):
         if swap_amount > 0:
             print(f"[BOOK] Swap: ${swap_amount} USDC")
 
-        # Attempt on-chain booking through the warden_client
         result = warden_client.submit_booking(hotel_name, hotel_price, destination, swap_amount)
 
         if result.get("tx_hash"):
@@ -307,7 +260,6 @@ def book_hotel(state):
                 "messages": [HumanMessage(content=agent_message)]
             }
         else:
-            # Fallback if warden_client returns an error
             error_message = result.get("error", "An unknown error occurred.")
             print(f"[BOOK] Warden returned error: {error_message}")
             return {"final_status": f"Booking failed: {error_message}"}
@@ -320,7 +272,6 @@ def book_hotel(state):
 
 
 # === BUILD WORKFLOW ===
-# Now that all node functions are defined, build the workflow
 workflow_app = build_workflow(parse_intent, search_hotels, check_swap, book_hotel)
 
 
@@ -370,14 +321,14 @@ if __name__ == "__main__":
             if book_res.get("messages"):
                 print("Agent:", book_res["messages"][-1].content)
 
-    # Default test input (can be overridden with --message)
+    # Default test input
     default_message = "Book me a hotel in Tokyo under $300 using crypto"
     user_message = args.message if args.message is not None else default_message
     test_input = {"messages": [HumanMessage(content=user_message)]}
 
     live_flag = args.live
-
     cmd = args.cmd.lower()
+
     if cmd == "test":
         print("Crypto Travel Agent (test)\n")
         run_workflow_once(test_input, live=False)
@@ -413,3 +364,9 @@ if __name__ == "__main__":
         print("\n-- Done debug --")
     else:
         print(f"Unknown command '{cmd}'. Use one of: test, run, parse, search, swap, book, debug.")
+
+    # === STANDBY MODE (Keeps Render "Live") ===
+    import time
+    print("\n✅ Agent finished successfully. Entering standby mode to keep Render active...")
+    while True:
+        time.sleep(600)
