@@ -1,9 +1,9 @@
-# agent.py - Crypto Travel Booker (Final Polish)
+# agent.py - Crypto Travel Booker (Schema Fix)
 import os
 import requests
 from dotenv import load_dotenv
 from datetime import date, timedelta
-from typing import TypedDict, List, Optional
+from typing import TypedDict, List
 
 # LangChain / LangGraph Imports
 from langchain_core.messages import HumanMessage, BaseMessage
@@ -16,15 +16,16 @@ load_dotenv()
 
 BOOKING_KEY = os.getenv("BOOKING_API_KEY")
 
-# State Definition
+# --- STATE DEFINITION FIX ---
+# Removed Optional[] wrappers to fix the "Unknown type: null" error in Playground
 class AgentState(TypedDict, total=False):
     messages: List[BaseMessage]
     user_query: str
     destination: str
     budget_usd: float
     hotels: List[dict]
-    hotel_name: Optional[str]
-    hotel_price: Optional[float]
+    hotel_name: str        # Changed from Optional[str] -> str
+    hotel_price: float     # Changed from Optional[float] -> float
     needs_swap: bool
     swap_amount: float
     final_status: str
@@ -156,9 +157,10 @@ def search_hotels(state: AgentState):
             {"name": f"Mock Hotel C in {city}", "price": 90.0}
         ]
         msg = f"Found hotels in {city}:\n1. {fallback[0]['name']} - ${fallback[0]['price']}\n2. {fallback[1]['name']} - ${fallback[1]['price']}\n3. {fallback[2]['name']} - ${fallback[2]['price']}\n\nReply with 1, 2, or 3 to book."
+        # Use empty string instead of None to satisfy type strictness
         return {
             "hotels": fallback,
-            "hotel_name": None,
+            "hotel_name": "", 
             "messages": [HumanMessage(content=msg)]
         }
     
@@ -196,7 +198,7 @@ def search_hotels(state: AgentState):
         
         return {
             "hotels": hotels,
-            "hotel_name": None,
+            "hotel_name": "", # Use empty string
             "messages": [HumanMessage(content=msg)]
         }
     except Exception as e:
@@ -216,8 +218,6 @@ def book_hotel(state):
     result = warden_client.submit_booking(hotel_name, hotel_price, destination, 0.0)
     tx = result.get("tx_hash", "0xMOCK")
 
-    # --- FEATURE UPGRADE: Clickable Link ---
-    # We return HTML here. The updated index.html will render this as a clickable link.
     tx_url = f"https://sepolia.etherscan.io/tx/{tx}"
     msg = f"🎉 <b>Successfully booked!</b><br>Hotel: {hotel_name}<br>Price: ${hotel_price}<br><br>👉 <a href='{tx_url}' target='_blank' style='color: #007bff; text-decoration: none;'>View Transaction on Etherscan</a>"
 
