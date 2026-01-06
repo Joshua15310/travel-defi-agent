@@ -30,52 +30,32 @@ def redirect_to_docs():
 # --- 2. UPDATED INPUT ADAPTER ---
 
 class SimpleInput(BaseModel):
-    messages: List[Dict[str, Any]] = Field(
-        ..., 
-        description="Chat history. Example: [{'role': 'user', 'content': 'Book a hotel in Paris'}]"
-    )
+    # This specifically names the field 'input' which the Playground UI 
+    # uses for the main text box in many versions.
+    input: str = Field(..., description="Your booking request (e.g., 'Hotel in Rome')")
+    messages: List[Dict[str, Any]] = Field(default=[], description="Chat history")
 
 def input_adapter(input_data: Dict[str, Any]) -> Dict[str, Any]:
-    """Filters out empty messages and ensures the agent receives valid human input."""
-    # 1. Extract messages from the incoming request
-    raw_messages = input_data.get("messages", [])
+    """Ensures the agent always gets the user query from the UI."""
+    # 1. Capture the direct input text
+    query = input_data.get("input", "").strip()
     
-    # 2. Convert and FILTER blank messages
+    # 2. Capture message history if it exists
+    raw_messages = input_data.get("messages", [])
     converted = []
     for m in raw_messages:
-        content = ""
-        role = "user"
-        
-        if isinstance(m, dict):
-            # Check for standard role keys or LangChain message types
-            role = m.get("role", m.get("type", "user"))
-            content = m.get("content", "")
-        else:
-            # Handle direct object attributes
-            content = getattr(m, "content", "")
-            role = "user"
-
-        # ONLY add messages that actually contain text
+        content = m.get("content", "") if isinstance(m, dict) else getattr(m, "content", "")
         if content.strip():
-            if role in ["user", "human"]:
-                converted.append(HumanMessage(content=content))
-            elif role in ["assistant", "ai"]:
-                converted.append(AIMessage(content=content))
+            converted.append(HumanMessage(content=content))
 
-    # 3. Fallback: If list is empty, check for an 'input' field (common in some UI versions)
-    if not converted:
-        fallback_query = input_data.get("input", "")
-        if fallback_query:
-            converted.append(HumanMessage(content=fallback_query))
+    # 3. If the history is empty but we have an 'input' field, use that
+    if not converted and query:
+        converted.append(HumanMessage(content=query))
 
-    # 4. Final safety check: if still empty, provide a blank HumanMessage to keep Graph happy
-    if not converted:
-        converted.append(HumanMessage(content=""))
-
-    # 5. Return the full state expected by AgentState in workflow/graph.py
+    # 4. Return the full state with a guaranteed query
     return {
         "messages": converted,
-        "user_query": converted[-1].content if converted else "",
+        "user_query": query,
         "destination": "unknown", 
         "budget_usd": 0.0,
         "hotel_name": "none",
@@ -86,7 +66,8 @@ def input_adapter(input_data: Dict[str, Any]) -> Dict[str, Any]:
         "tx_hash": "none"
     }
 
-# 3. Create the Runnable chain with the adapter and the compiled graph
+# 3. Create the Runnable chain
+# We explicitly set playground_type="chat" here
 clean_agent = RunnableLambda(input_adapter).with_types(input_type=SimpleInput) | graph
 
 # 4. Add Routes
@@ -94,9 +75,9 @@ add_routes(
     app,
     clean_agent,
     path="/agent",
+    playground_type="chat" # <--- THIS IS THE MAGIC LINE
 )
 
 if __name__ == "__main__":
     import uvicorn
-    # Use standard 8000 for local, Render uses $PORT
     uvicorn.run(app, host="0.0.0.0", port=8000)
