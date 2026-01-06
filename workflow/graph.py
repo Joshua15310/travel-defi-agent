@@ -1,57 +1,56 @@
-"""
-Explicit LangGraph workflow definition for the Crypto Travel Agent.
-
-This module defines the graph structure (nodes and edges) without importing
-node implementations. Node functions are added dynamically to avoid circular
-imports with agent.py.
-"""
 from langgraph.graph import StateGraph, END
-from typing import TypedDict, Annotated
-import operator
-from langchain_core.messages import HumanMessage
-
+from typing import TypedDict, List, Optional
+from langchain_core.messages import BaseMessage
 
 class AgentState(TypedDict):
-    """Shared state across all workflow nodes."""
-    messages: Annotated[list, operator.add]
+    messages: List[BaseMessage]
     user_query: str
     destination: str
     budget_usd: float
-    hotel_name: str
-    hotel_price: float
-    hotels: list
+    hotels: List[dict]
+    hotel_name: Optional[str]
+    hotel_price: Optional[float]
     needs_swap: bool
     swap_amount: float
     final_status: str
-    tx_hash: str  # For Warden transaction hash
+    tx_hash: str
 
+def build_workflow(parse_intent_node, search_hotels_node, check_swap_node, book_hotel_node, checkpointer=None):
+    # 1. Initialize Graph
+    workflow = StateGraph(AgentState)
 
-def build_workflow(parse_fn, search_fn, swap_fn, book_fn):
-    """Build and compile the LangGraph workflow.
+    # 2. Add Nodes
+    workflow.add_node("parse", parse_intent_node)
+    workflow.add_node("search", search_hotels_node)
+    workflow.add_node("swap", check_swap_node)
+    workflow.add_node("book", book_hotel_node)
+
+    # 3. Define Edges
+    workflow.set_entry_point("parse")
     
-    Args:
-        parse_fn: parse_intent function
-        search_fn: search_hotels function
-        swap_fn: check_swap function
-        book_fn: book_hotel function
+    workflow.add_edge("parse", "search")
     
-    Returns:
-        Compiled workflow (LangGraph app)
-    """
-    wf = StateGraph(AgentState)
-    wf.add_node("parse", parse_fn)
-    wf.add_node("search", search_fn)
-    wf.add_node("swap", swap_fn)
-    wf.add_node("book", book_fn)
+    # Conditional logic after search
+    def route_after_search(state):
+        # If the user selected a hotel (hotel_name is set), go to check swap/book
+        if state.get("hotel_name"):
+            return "swap"
+        # Otherwise (just a list of hotels), stop and wait for user selection
+        return END
 
-    wf.set_entry_point("parse")
-    wf.add_edge("parse", "search")
-    wf.add_edge("search", "swap")
-    wf.add_edge("swap", "book")
-    wf.add_edge("book", END)
+    workflow.add_conditional_edges(
+        "search",
+        route_after_search,
+        {
+            "swap": "swap",
+            END: END
+        }
+    )
 
-    return wf.compile()
+    workflow.add_edge("swap", "book")
+    workflow.add_edge("book", END)
 
-
-# Lazy initialization: workflow_app is built in agent.py after imports are resolved
-workflow_app = None
+    # 4. Compile with Memory (Checkpointer) - FIXED LINE BELOW
+    app = workflow.compile(checkpointer=checkpointer)
+    
+    return app
