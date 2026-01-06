@@ -33,7 +33,7 @@
     <script>
         // 1. Generate a random Thread ID for this session
         const threadId = crypto.randomUUID();
-        // 2. Point to your Render URL
+        // 2. Point to your Render URL (Ensure no trailing slash issues)
         const AGENT_URL = "https://crypto-defi-agent.onrender.com/agent/invoke";
 
         function handleEnter(e) {
@@ -50,25 +50,38 @@
             input.value = "";
             setLoading(true);
 
+            // Construct the payload exactly how LangGraph expects it
+            const payload = {
+                input: {
+                    messages: [{ content: text, type: "human" }]
+                },
+                config: {
+                    configurable: {
+                        thread_id: threadId
+                    }
+                }
+            };
+
             try {
-                // 3. Send Request to Server with Thread ID
                 const response = await fetch(AGENT_URL, {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({
-                        input: { messages: [{ content: text, type: "human" }] },
-                        config: { configurable: { thread_id: threadId } }
-                    })
+                    body: JSON.stringify(payload)
                 });
 
                 if (!response.ok) {
-                    throw new Error(`Server Error: ${response.status}`);
+                    const errText = await response.text();
+                    throw new Error(`Server Error: ${response.status} - ${errText}`);
                 }
 
                 const data = await response.json();
-                // Extract the last message from the agent
-                const messages = data.output.messages;
-                const lastMsg = messages[messages.length - 1].content;
+                
+                // Extract the last message content properly
+                let lastMsg = "No response content.";
+                if (data.output && data.output.messages && data.output.messages.length > 0) {
+                    const msgs = data.output.messages;
+                    lastMsg = msgs[msgs.length - 1].content;
+                }
                 
                 addMessage(lastMsg, "agent");
 
