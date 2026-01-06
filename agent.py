@@ -158,3 +158,9 @@ def book_hotel(state):
             )
         ]
     }
+
+# expose workflow for server import
+__all__ = ["workflow_app"]
+
+workflow_app = build_workflow(parse_intent, search_hotels, check_swap, book_hotel)
+
