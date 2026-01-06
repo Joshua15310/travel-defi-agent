@@ -27,13 +27,15 @@ def parse_intent(state):
     messages = state.get("messages", [])
     text = ""
     
-    # Iterate backwards to skip blank UI noise
+    # Iterate backwards to find the last real message
     for m in reversed(messages):
+        # Handle message objects (HumanMessage) or dicts
         content = getattr(m, 'content', m.get('content', '')) if isinstance(m, (object, dict)) else ""
-        if content.strip():
+        if content and content.strip():
             text = content.strip()
             break
             
+    # Default values
     destination = "Unknown"
     budget = 400.0
 
@@ -42,24 +44,29 @@ def parse_intent(state):
 
     lowered = text.lower()
     
-    # Extract Destination
+    # 1. Extract Destination (Robustly)
     for token in [" in ", " to ", " at ", " for "]:
         if token in lowered:
             try:
-                destination = lowered.split(token, 1)[1].split()[0].strip("?.,!\"'").capitalize()
+                # Split and clean punctuation
+                parts = lowered.split(token, 1)
+                if len(parts) > 1:
+                    destination = parts[1].split()[0].strip("?.,!\"'").capitalize()
+                    break
             except IndexError:
                 pass
-            break
 
+    # Fallback: Use last word if marker search failed
     if destination == "Unknown":
         words = text.split()
         if words:
             destination = words[-1].strip("?.,!\"'").capitalize()
 
-    # Extract Budget
+    # 2. Extract Budget (Fixing the $500" quote bug)
     if "$" in text:
         try:
             raw_budget = text.split("$", 1)[1].split()[0]
+            # Remove quotes, commas, and punctuation
             clean_budget = raw_budget.replace(",", "").replace('"', '').replace("'", "").strip("?.,!")
             budget = float(clean_budget)
         except Exception:
@@ -74,7 +81,7 @@ def parse_intent(state):
 
 
 def get_destination_data(city):
-    """Returns both ID and Type dynamically (supports England, Tokyo, etc.)"""
+    """Returns both ID and Type to support Countries (England) & Cities."""
     if not BOOKING_KEY:
         return None, None
 
@@ -84,7 +91,7 @@ def get_destination_data(city):
             "X-RapidAPI-Key": BOOKING_KEY,
             "X-RapidAPI-Host": "booking-com.p.rapidapi.com"
         }
-        # FIX 1: Use en-us for stability
+        # CRITICAL FIX: Use 'en-us' to prevent 422 errors on free tier
         params = {"name": city, "locale": "en-us"}
 
         r = requests.get(url, headers=headers, params=params, timeout=10)
@@ -92,7 +99,7 @@ def get_destination_data(city):
         
         data = r.json()
         if data:
-            # Simply take the first best match (City, Region, or Country)
+            # Take the first best match (City, Region, or Country)
             first = data[0]
             return first.get("dest_id"), first.get("dest_type")
             
@@ -104,10 +111,10 @@ def search_hotels(state):
     city = state.get("destination", "Unknown")
     budget = state.get("budget_usd", 400.0)
     
-    # FIX 2: Get both ID and Type dynamically
+    # Dynamic Lookup (ID + Type)
     dest_id, dest_type = get_destination_data(city)
     
-    # Fallback to Paris only if lookup completely failed
+    # Fallback to Paris if lookup fails
     if not dest_id:
         print(f"[WARN] No destination found for {city}. Using fallback.")
         dest_id = "-1746443"
@@ -122,7 +129,7 @@ def search_hotels(state):
         "X-RapidAPI-Host": "booking-com.p.rapidapi.com"
     }
     
-    # FIX 3: Clean params - No order_by, No currency, En-US locale
+    # CRITICAL FIX: Clean parameters (No order_by, en-us locale)
     params = {
         "dest_id": str(dest_id),
         "dest_type": dest_type,
@@ -135,12 +142,10 @@ def search_hotels(state):
     }
 
     try:
-        print(f"[DEBUG] Searching Params: {params}") # Debug print
         response = requests.get(url, headers=headers, params=params, timeout=15)
         
         if response.status_code != 200:
-            print(f"[ERROR] API Fail: {response.status_code} - URL: {response.url}")
-            print(f"[ERROR] Body: {response.text}")
+            print(f"[ERROR] API Fail {response.status_code}: {response.url}")
             raise Exception(f"API Error {response.status_code}")
         
         data = response.json()
@@ -188,7 +193,6 @@ def search_hotels(state):
             "hotel_price": fallback["price"],
             "messages": [HumanMessage(content=msg)]
         }
-
 
 def check_swap(state):
     return {"needs_swap": False}
