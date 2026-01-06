@@ -27,35 +27,32 @@ app.add_middleware(
 def redirect_to_docs():
     return RedirectResponse(url="/docs")
 
-# --- 2. UPDATED INPUT ADAPTER ---
+# --- SIMPLIFIED INPUT ADAPTER ---
 
 class SimpleInput(BaseModel):
-    # This specifically names the field 'input' which the Playground UI 
-    # uses for the main text box in many versions.
-    input: str = Field(..., description="Your booking request (e.g., 'Hotel in Rome')")
-    messages: List[Dict[str, Any]] = Field(default=[], description="Chat history")
+    # Reverting to just messages so the UI is clean
+    messages: List[Dict[str, Any]] = Field(
+        default=[], 
+        description="Chat history. Click '+' to add a message."
+    )
 
 def input_adapter(input_data: Dict[str, Any]) -> Dict[str, Any]:
-    """Ensures the agent always gets the user query from the UI."""
-    # 1. Capture the direct input text
-    query = input_data.get("input", "").strip()
-    
-    # 2. Capture message history if it exists
+    """Ensures the agent gets the user query from the message list."""
     raw_messages = input_data.get("messages", [])
     converted = []
+    
     for m in raw_messages:
         content = m.get("content", "") if isinstance(m, dict) else getattr(m, "content", "")
         if content.strip():
             converted.append(HumanMessage(content=content))
 
-    # 3. If the history is empty but we have an 'input' field, use that
-    if not converted and query:
-        converted.append(HumanMessage(content=query))
+    # Fallback to keep the graph from crashing if empty
+    if not converted:
+        converted.append(HumanMessage(content=""))
 
-    # 4. Return the full state with a guaranteed query
     return {
         "messages": converted,
-        "user_query": query,
+        "user_query": converted[-1].content if converted else "",
         "destination": "unknown", 
         "budget_usd": 0.0,
         "hotel_name": "none",
@@ -67,15 +64,14 @@ def input_adapter(input_data: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 # 3. Create the Runnable chain
-# We explicitly set playground_type="chat" here
 clean_agent = RunnableLambda(input_adapter).with_types(input_type=SimpleInput) | graph
 
-# 4. Add Routes - Set to "default" to fix the error in Screenshot 301
+# 4. Add Routes - SET TO DEFAULT PLAYGROUND
 add_routes(
     app,
     clean_agent,
     path="/agent",
-    playground_type="default" # <--- Change this from "chat" to "default"
+    playground_type="default" # <--- This fixes the "Chat playground not supported" error
 )
 
 if __name__ == "__main__":
