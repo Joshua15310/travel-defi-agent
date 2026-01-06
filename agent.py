@@ -75,17 +75,21 @@ def get_destination_id(city):
     if not BOOKING_KEY:
         return None
 
-    url = "https://booking-com.p.rapidapi.com/v1/hotels/locations"
-    headers = {
-        "X-RapidAPI-Key": BOOKING_KEY,
-        "X-RapidAPI-Host": "booking-com.p.rapidapi.com"
-    }
-    params = {"name": city, "locale": "en-gb"}
+    try:
+        url = "https://booking-com.p.rapidapi.com/v1/hotels/locations"
+        headers = {
+            "X-RapidAPI-Key": BOOKING_KEY,
+            "X-RapidAPI-Host": "booking-com.p.rapidapi.com"
+        }
+        params = {"name": city, "locale": "en-gb"}
 
-    r = requests.get(url, headers=headers, params=params, timeout=10)
-    for loc in r.json():
-        if loc.get("dest_type") == "city":
-            return loc.get("dest_id")
+        r = requests.get(url, headers=headers, params=params, timeout=10)
+        r.raise_for_status()
+        for loc in r.json():
+            if loc.get("dest_type") == "city":
+                return loc.get("dest_id")
+    except Exception as e:
+        print(f"[ERROR] Failed to get destination ID for {city}: {e}")
     return None
 
 def search_hotels(state):
@@ -93,57 +97,102 @@ def search_hotels(state):
 
     dest_id = get_destination_id(city)
     if not dest_id:
+        # Fallback to mock hotels if no dest_id
+        print(f"[WARN] No destination ID found for {city}. Using mock hotels.")
+        hotels = [
+            {"name": f"Mock Hotel 1 in {city}", "price": 100.0},
+            {"name": f"Mock Hotel 2 in {city}", "price": 150.0},
+            {"name": f"Mock Hotel 3 in {city}", "price": 200.0},
+            {"name": f"Mock Hotel 4 in {city}", "price": 250.0},
+            {"name": f"Mock Hotel 5 in {city}", "price": 300.0},
+        ]
+        lines = [f"{h['name']} - ${h['price']}/night" for h in hotels]
+        message = f"Top hotels in {city} (mock data):\n" + "\n".join(lines)
         return {
-            "hotels": [],
-            "messages": [HumanMessage(content=f"No hotels found for {city}")]
+            "hotels": hotels,
+            "hotel_name": hotels[0]["name"],
+            "hotel_price": hotels[0]["price"],
+            "messages": [HumanMessage(content=message)]
         }
 
     tomorrow = date.today() + timedelta(days=1)
     next_day = tomorrow + timedelta(days=1)
 
-    url = "https://booking-com.p.rapidapi.com/v1/hotels/search"
-    headers = {
-        "X-RapidAPI-Key": BOOKING_KEY,
-        "X-RapidAPI-Host": "booking-com.p.rapidapi.com"
-    }
-    params = {
-        "dest_id": dest_id,
-        "dest_type": "city",
-        "checkin_date": tomorrow.strftime("%Y-%m-%d"),
-        "checkout_date": next_day.strftime("%Y-%m-%d"),
-        "adults_number": "1",
-        "room_number": "1",
-        "order_by": "price",
-        "filter_by_currency": "USD",
-        "locale": "en-gb"
-    }
-
-    r = requests.get(url, headers=headers, params=params, timeout=10)
-    data = r.json()
-
-    if not data.get("result"):
-        return {
-            "hotels": [],
-            "messages": [HumanMessage(content=f"No hotels found for {city}")]
+    try:
+        url = "https://booking-com.p.rapidapi.com/v1/hotels/search"
+        headers = {
+            "X-RapidAPI-Key": BOOKING_KEY,
+            "X-RapidAPI-Host": "booking-com.p.rapidapi.com"
+        }
+        params = {
+            "dest_id": dest_id,
+            "dest_type": "city",
+            "checkin_date": tomorrow.strftime("%Y-%m-%d"),
+            "checkout_date": next_day.strftime("%Y-%m-%d"),
+            "adults_number": "1",
+            "room_number": "1",
+            "order_by": "price",
+            "filter_by_currency": "USD",
+            "locale": "en-gb"
         }
 
-    hotels = []
-    lines = []
+        r = requests.get(url, headers=headers, params=params, timeout=10)
+        r.raise_for_status()
+        data = r.json()
 
-    for h in data["result"][:5]:
-        name = h.get("hotel_name", "Unknown Hotel")
-        price = float(h.get("price_breakdown", {}).get("all_inclusive_price", 0))
-        hotels.append({"name": name, "price": price})
-        lines.append(f"{name} - ${price}/night")
+        if not data.get("result"):
+            # Fallback to mock if no results
+            print(f"[WARN] No hotels found for {city} via API. Using mock hotels.")
+            hotels = [
+                {"name": f"Mock Hotel 1 in {city}", "price": 100.0},
+                {"name": f"Mock Hotel 2 in {city}", "price": 150.0},
+                {"name": f"Mock Hotel 3 in {city}", "price": 200.0},
+                {"name": f"Mock Hotel 4 in {city}", "price": 250.0},
+                {"name": f"Mock Hotel 5 in {city}", "price": 300.0},
+            ]
+            lines = [f"{h['name']} - ${h['price']}/night" for h in hotels]
+            message = f"Top hotels in {city} (mock data):\n" + "\n".join(lines)
+            return {
+                "hotels": hotels,
+                "hotel_name": hotels[0]["name"],
+                "hotel_price": hotels[0]["price"],
+                "messages": [HumanMessage(content=message)]
+            }
 
-    message = f"Top hotels in {city}:\n" + "\n".join(lines)
+        hotels = []
+        lines = []
 
-    return {
-        "hotels": hotels,
-        "hotel_name": hotels[0]["name"],
-        "hotel_price": hotels[0]["price"],
-        "messages": [HumanMessage(content=message)]
-    }
+        for h in data["result"][:5]:
+            name = h.get("hotel_name", "Unknown Hotel")
+            price = float(h.get("price_breakdown", {}).get("all_inclusive_price", 0))
+            hotels.append({"name": name, "price": price})
+            lines.append(f"{name} - ${price}/night")
+
+        message = f"Top hotels in {city}:\n" + "\n".join(lines)
+
+        return {
+            "hotels": hotels,
+            "hotel_name": hotels[0]["name"],
+            "hotel_price": hotels[0]["price"],
+            "messages": [HumanMessage(content=message)]
+        }
+    except Exception as e:
+        print(f"[ERROR] Failed to search hotels for {city}: {e}. Using mock hotels.")
+        hotels = [
+            {"name": f"Mock Hotel 1 in {city}", "price": 100.0},
+            {"name": f"Mock Hotel 2 in {city}", "price": 150.0},
+            {"name": f"Mock Hotel 3 in {city}", "price": 200.0},
+            {"name": f"Mock Hotel 4 in {city}", "price": 250.0},
+            {"name": f"Mock Hotel 5 in {city}", "price": 300.0},
+        ]
+        lines = [f"{h['name']} - ${h['price']}/night" for h in hotels]
+        message = f"Top hotels in {city} (mock data due to error):\n" + "\n".join(lines)
+        return {
+            "hotels": hotels,
+            "hotel_name": hotels[0]["name"],
+            "hotel_price": hotels[0]["price"],
+            "messages": [HumanMessage(content=message)]
+        }
 
 
 def check_swap(state):
