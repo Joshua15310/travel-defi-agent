@@ -23,29 +23,43 @@ if GROK_API_KEY:
     )
 
 def parse_intent(state):
-    text = state["messages"][-1].content.strip()
-
-    destination = None
+    # Search history for the first non-empty message
+    messages = state.get("messages", [])
+    text = ""
+    for m in reversed(messages):
+        if m.content.strip():
+            text = m.content.strip()
+            break
+            
+    # Default values if no text is found
+    destination = "Unknown"
     budget = 400.0
 
-    lowered = text.lower()
+    if not text:
+        return {"destination": destination, "budget_usd": budget}
 
+    lowered = text.lower()
+    # Logic to find the destination city
     for token in [" in ", " to ", " at ", " for "]:
         if token in lowered:
+            # Grab the next word and capitalize it
             destination = lowered.split(token, 1)[1].split()[0].capitalize()
             break
 
-    if not destination:
+    # If no markers found, use the last word of the sentence
+    if destination == "Unknown":
         words = text.split()
         if words:
-            destination = words[-1].capitalize()
+            destination = words[-1].strip("?.").capitalize()
 
+    # Extract budget if a '$' is present
     if "$" in text:
         try:
             budget = float(text.split("$", 1)[1].split()[0].replace(",", ""))
         except:
             pass
 
+    print(f"[DEBUG] Parsed Destination: {destination}, Budget: {budget}")
     return {
         "destination": destination,
         "budget_usd": budget
