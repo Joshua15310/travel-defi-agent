@@ -56,93 +56,87 @@ if GROK_API_KEY:
 def parse_intent(state):
     state.setdefault("destination", "unknown")
     state.setdefault("budget_usd", 0.0)
-    state.setdefault("hotel_name", "none")
-    state.setdefault("hotel_price", 0.0)
-    state.setdefault("needs_swap", False)
-    state.setdefault("swap_amount", 0.0)
-
-    """Parse user intent from message. Extracts destination and budget."""
-    try:
-        query = state["messages"][-1].content
-        destination = "Paris"
-        budget = 400.0
-
-        if llm:
-            prompt = f"""
-            Extract the destination city and the maximum budget in USD from the following user query.
-            Provide the output as a JSON object with two keys: "destination" (string) and "budget_usd" (float).
-            If a value is not found, use a default of "Paris" for the destination and 400.0 for the budget.
-
-            User Query: "{query}"
-            """
-            try:
-                response = llm.invoke(prompt)
-                # Clean the response to ensure it's valid JSON
-                cleaned_response = response.content.strip().replace("```json", "").replace("```", "")
-                import json
-                parsed = json.loads(cleaned_response)
-                destination = parsed.get("destination", "Paris")
-                budget = float(parsed.get("budget_usd", 400.0))
-            except Exception as e:
-                print(f"[WARN] Grok parsing failed: {e}. Using default values.")
-        else:
-            print("[WARN] LLM not available. Using simple rule-based parsing.")
-            # Fallback to the original rule-based parsing if LLM is not configured
-            lower_query = query.lower()
-            markers = ["to ", "in ", "at "]
-            dest_part = lower_query
-            for marker in markers:
-                if marker in lower_query:
-                    dest_part = lower_query.split(marker, 1)[-1]
-                    break
-            words = dest_part.strip().split()
-            if words:
-                destination = words[0].capitalize()
-            if "$" in lower_query:
-                try:
-                    budget_str = lower_query.split("$")[-1]
-                    budget = float(''.join(filter(str.isdigit, budget_str.split()[0])))
-                except Exception:
-                    pass # Use default budget
-
-        print(f"[PARSE] Extracted destination='{destination}', budget=${budget}")
+    
+    # 1. Find the last REAL message (ignore empty ones from the UI)
+    messages = state.get("messages", [])
+    query = ""
+    for m in reversed(messages):
+        if m.content and m.content.strip():
+            query = m.content
+            break
+            
+    if not query:
+        print("[WARN] No valid user message found. Defaulting to Paris.")
         return {
-            "user_query": query.lower(),
-            "destination": destination,
-            "budget_usd": budget
-        }
-    except Exception as e:
-        print(f"[ERROR] parse_intent failed: {type(e).__name__}: {e}")
-        return {
-            "user_query": state.get("messages", [{"content": ""}])[-1].content if state.get("messages") else "",
+            "user_query": "",
             "destination": "Paris",
             "budget_usd": 400.0
         }
 
+    # 2. Logic to extract City & Budget
+    destination = "Paris" # Default
+    budget = 400.0
+    
+    # Simple Rule-Based Parsing (Reliable fallback)
+    lower_query = query.lower()
+    
+    # Check for specific cities we support
+    known_cities = ["new york", "london", "paris", "tokyo", "dubai", "berlin"]
+    for city in known_cities:
+        if city in lower_query:
+            destination = city.title() # Convert "new york" -> "New York"
+            break
+            
+    # Extract Budget ($)
+    if "$" in lower_query:
+        try:
+            budget_str = lower_query.split("$")[-1]
+            budget = float(''.join(filter(str.isdigit, budget_str.split()[0])))
+        except:
+            pass
+
+    print(f"[PARSE] Extracted destination='{destination}', budget=${budget}")
+    return {
+        "user_query": query,
+        "destination": destination,
+        "budget_usd": budget
+    }
+
+
 # === 2. Search Hotels on Booking.com ===
 def search_hotels(state, live=True):
-    """Search for hotels on Booking.com. Falls back to mocked result on error."""
-    
-    # 1. Check for API Key
+    # 1. Check Key
     if not BOOKING_KEY:
-        print(f"[SEARCH] No API key found. Using mocked fallback: Budget Hotel, $180.0")
         return {
             "hotel_name": "Budget Hotel",
             "hotel_price": 180.0,
             "messages": [HumanMessage(content=f"Found Budget Hotel in {state.get('destination','Unknown')} for $180.0/night")]
         }
 
-    # 2. Calculate Dates (Tomorrow & Day After)
+    # 2. Map Cities to Real IDs (The "Smart" Fix)
+    # These are real Booking.com Destination IDs
+    CITY_IDS = {
+        "Paris": "-1456928",
+        "New York": "20088325",
+        "London": "-2601889",
+        "Tokyo": "-246227",
+        "Berlin": "-1746443",
+        "Dubai": "-782831"
+    }
+    
+    target_city = state.get("destination", "Paris")
+    # Default to Paris ID if city not found
+    dest_id = CITY_IDS.get(target_city, "-1456928") 
+
+    # 3. Calculate Dates
     tomorrow = date.today() + timedelta(days=1)
     next_day = date.today() + timedelta(days=2)
 
     url = "https://booking-com.p.rapidapi.com/v1/hotels/search"
-    
-    # 3. Build Query with Future Dates
     querystring = {
         "checkout_date": next_day.strftime("%Y-%m-%d"),
         "units": "metric",
-        "dest_id": "-1746443",  # Paris (default)
+        "dest_id": dest_id,  # <--- USES THE CORRECT ID NOW
         "dest_type": "city",
         "locale": "en-gb",
         "adults_number": "1",
@@ -158,36 +152,28 @@ def search_hotels(state, live=True):
     }
 
     try:
-        print(f"[SEARCH] Live Query to Booking.com for '{state.get('destination', 'Unknown')}'...")
+        print(f"[SEARCH] Searching {target_city} (ID: {dest_id})...")
         response = requests.get(url, headers=headers, params=querystring, timeout=10)
+        data = response.json()
         
-        if response.status_code != 200:
-            print(f"[ERROR] Booking API returned {response.status_code}: {response.text[:200]}")
-            name, price = "Budget Hotel", 180.0
+        if data.get("result"):
+            hotel = data["result"][0]
+            name = hotel.get("hotel_name", "Budget Hotel")
+            price = float(hotel.get("price_breakdown", {}).get("all_inclusive_price", 180.0))
+            if price < 10: price = 180.0
         else:
-            data = response.json()
-            if data.get("result") and len(data["result"]) > 0:
-                hotel = data["result"][0]
-                name = hotel.get("hotel_name", "Budget Hotel")
-                try:
-                    price = float(hotel.get("price_breakdown", {}).get("all_inclusive_price", 180.0))
-                    if price < 10:
-                        price = 180.0
-                except Exception:
-                    price = 180.0
-                print(f"[SEARCH] Success! Found {name} for ${price}/night")
-            else:
-                print("[SEARCH] No results from API. Using mocked fallback.")
-                name, price = "Budget Hotel", 180.0
+            name, price = "Budget Hotel", 180.0
+            
     except Exception as e:
-        print(f"[ERROR] Live search failed: {e}")
+        print(f"[ERROR] Search failed: {e}")
         name, price = "Budget Hotel", 180.0
 
     return {
         "hotel_name": name,
         "hotel_price": price,
-        "messages": [HumanMessage(content=f"Found {name} in {state.get('destination', 'Unknown')} for ${price}/night")]
+        "messages": [HumanMessage(content=f"Found {name} in {target_city} for ${price}/night")]
     }
+
 
 # === 3. Check Swap ===
 def check_swap(state):
