@@ -8,6 +8,8 @@ from langchain_openai import ChatOpenAI
 import warden_client
 
 from workflow.graph import build_workflow
+# --- NEW: Import Memory Saver ---
+from langgraph.checkpoint.memory import MemorySaver 
 
 load_dotenv()
 
@@ -279,7 +281,9 @@ def book_hotel(state):
         "messages": [HumanMessage(content=f"🎉 Successfully booked {hotel_name} for ${hotel_price}. Transaction: {tx}")]
     }
 
-workflow_app = build_workflow(parse_intent, search_hotels, check_swap, book_hotel)
+# --- NEW: Build workflow WITH Memory ---
+memory = MemorySaver()
+workflow_app = build_workflow(parse_intent, search_hotels, check_swap, book_hotel, checkpointer=memory)
 
 if __name__ == "__main__":
     import time
