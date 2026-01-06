@@ -17,10 +17,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 2. Add LangServe Routes
+# 2. Add LangServe Routes (Playground)
 add_routes(app, workflow_app, path="/agent")
 
-# 3. Custom Chat Endpoint (For your index.html)
+# 3. Custom Chat Endpoint (For index.html)
 @app.post("/chat")
 async def chat_endpoint(request: Request):
     try:
@@ -31,11 +31,13 @@ async def chat_endpoint(request: Request):
         if not user_message:
             return JSONResponse({"error": "No message provided"}, status_code=400)
 
+        # Run the agent
         response = await workflow_app.ainvoke(
             input={"messages": [{"content": user_message, "type": "human"}]},
             config={"configurable": {"thread_id": thread_id}}
         )
 
+        # Return just the last message
         last_message = response["messages"][-1].content
         return JSONResponse({"reply": last_message})
 
@@ -43,12 +45,15 @@ async def chat_endpoint(request: Request):
         print(f"Error in /chat: {e}")
         return JSONResponse({"error": str(e)}, status_code=500)
 
-# 4. FIX: Root Redirect (Added Trailing Slash)
-# This forces the browser to load the playground assets correctly.
+# 4. Root Redirect (Points to Playground)
 @app.get("/")
 async def redirect_root_to_playground():
     return RedirectResponse(url="/agent/playground/") 
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    # --- CRITICAL FIX FOR RENDER ---
+    # proxy_headers=True: Tells Uvicorn to trust that Render is handling HTTPS.
+    # forwarded_allow_ips="*": Accepts headers from Render's load balancer.
+    # This prevents the "White Page" / Mixed Content errors.
+    uvicorn.run(app, host="0.0.0.0", port=port, proxy_headers=True, forwarded_allow_ips="*")
