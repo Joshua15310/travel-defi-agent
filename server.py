@@ -31,27 +31,24 @@ def redirect_to_docs():
 
 # --- INPUT ADAPTER ---
 class SimpleInput(BaseModel):
-    messages: List[Dict[str, Any]] = Field(
-        default=[], 
-        description="Chat history. Click '+' to add a message."
+    query: str = Field(
+        default="", 
+        description="Your travel booking query, e.g., 'book a hotel in Lagos for $400'"
     )
 
 def input_adapter(input_data: Dict[str, Any]) -> Dict[str, Any]:
     """Ensures the agent receives valid input and filters empty messages."""
-    raw_messages = input_data.get("messages", [])
+    query = input_data.get("query", "").strip()
     converted = []
     
-    for m in raw_messages:
-        content = m.get("content", "") if isinstance(m, dict) else getattr(m, "content", "")
-        if content.strip():
-            converted.append(HumanMessage(content=content))
-
-    if not converted:
+    if query:
+        converted.append(HumanMessage(content=query))
+    else:
         converted.append(HumanMessage(content=""))
 
     return {
         "messages": converted,
-        "user_query": converted[-1].content if converted else "",
+        "user_query": query,
         "destination": "unknown", 
         "budget_usd": 0.0,
         "hotel_name": "none",
