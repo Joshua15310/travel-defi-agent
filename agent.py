@@ -18,8 +18,9 @@ load_dotenv()
 BOOKING_KEY = os.getenv("BOOKING_API_KEY")
 GROK_API_KEY = os.getenv("GROK_API_KEY")
 
-# --- 1. Define State Schema (Moved here to avoid import errors) ---
-class AgentState(TypedDict):
+# --- 1. Define State Schema (Updated) ---
+# total=False makes all fields optional, fixing the 422 Error
+class AgentState(TypedDict, total=False):
     messages: List[BaseMessage]
     user_query: str
     destination: str
