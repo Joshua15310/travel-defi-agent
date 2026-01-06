@@ -1,4 +1,4 @@
-# agent.py - Crypto Travel Booker (Final Fix)
+# agent.py - Crypto Travel Booker (Safety Net Version)
 import os
 import requests
 from dotenv import load_dotenv
@@ -7,7 +7,7 @@ from typing import TypedDict, List, Optional
 
 # LangChain / LangGraph Imports
 from langchain_core.messages import HumanMessage, BaseMessage
-from langchain_openai import ChatOpenAI
+from langchain_core.runnables import RunnableConfig
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 
@@ -18,8 +18,7 @@ load_dotenv()
 BOOKING_KEY = os.getenv("BOOKING_API_KEY")
 GROK_API_KEY = os.getenv("GROK_API_KEY")
 
-# --- CRITICAL FIX HERE ---
-# added 'total=False'. This fixes the 422 Error by making fields optional.
+# State Definition (Flexible)
 class AgentState(TypedDict, total=False):
     messages: List[BaseMessage]
     user_query: str
@@ -35,12 +34,11 @@ class AgentState(TypedDict, total=False):
 
 # --- Node Functions ---
 
-def parse_intent(state):
-    """Extracts text and preserves state for multi-turn conversation."""
+def parse_intent(state: AgentState):
+    """Extracts text and preserves state."""
     messages = state.get("messages", [])
     text = ""
     
-    # Find user's latest message
     for m in reversed(messages):
         if hasattr(m, 'content'):
             content = m.content
@@ -52,14 +50,13 @@ def parse_intent(state):
             text = content.strip()
             break
             
-    # Preserve existing state safely
     current_dest = state.get("destination", "Unknown")
     current_budget = state.get("budget_usd", 400.0)
     
     if not text:
         return {"user_query": ""}
 
-    # Check for selection (e.g. "1")
+    # Selection Logic
     is_selection = False
     if text.isdigit() and len(text) < 2:
         is_selection = True
@@ -69,7 +66,7 @@ def parse_intent(state):
     if is_selection:
         return {"user_query": text}
 
-    # Normal Search Parsing
+    # Search Logic
     destination = current_dest
     budget = current_budget
     lowered = text.lower()
@@ -101,13 +98,11 @@ def parse_intent(state):
         except Exception:
             pass
 
-    print(f"[DEBUG] User Query: '{text}' -> Dest: {destination}, Budget: {budget}")
     return {
         "user_query": text,
         "destination": destination,
         "budget_usd": budget
     }
-
 
 def get_destination_data(city):
     if not BOOKING_KEY: return None, None
@@ -119,15 +114,15 @@ def get_destination_data(city):
         if r.status_code == 200:
             data = r.json()
             if data: return data[0].get("dest_id"), data[0].get("dest_type")
-    except Exception as e:
-        print(f"[ERROR] Dest lookup failed: {e}")
+    except Exception:
+        pass
     return None, None
 
-def search_hotels(state):
+def search_hotels(state: AgentState):
     user_query = state.get("user_query", "").lower()
     existing_hotels = state.get("hotels", [])
     
-    # MODE 1: SELECTION
+    # Selection Mode
     if existing_hotels and (user_query.isdigit() or user_query in ["first", "second", "third", "1", "2", "3", "4", "5"]):
         try:
             index = -1
@@ -149,7 +144,7 @@ def search_hotels(state):
         except Exception:
             pass
 
-    # MODE 2: NEW SEARCH
+    # Search Mode
     city = state.get("destination", "Unknown")
     budget = state.get("budget_usd", 400.0)
     
@@ -170,7 +165,7 @@ def search_hotels(state):
         }
     
     dest_id, dest_type = get_destination_data(city)
-    if not dest_id: dest_id, dest_type = "-2601889", "city" # London Default
+    if not dest_id: dest_id, dest_type = "-2601889", "city" 
 
     tomorrow = date.today() + timedelta(days=1)
     next_day = tomorrow + timedelta(days=1)
@@ -229,7 +224,7 @@ def book_hotel(state):
         "messages": [HumanMessage(content=f"🎉 Successfully booked {hotel_name} for ${hotel_price}. Transaction: {tx}")]
     }
 
-# --- Build Graph ---
+# --- Graph Construction ---
 def build_agent():
     workflow = StateGraph(AgentState)
     
@@ -249,7 +244,12 @@ def build_agent():
     workflow.add_edge("swap", "book")
     workflow.add_edge("book", END)
     
+    # Initialize Memory
     memory = MemorySaver()
+    
+    # COMPILE WITHOUT DEFAULT CONFIG
+    # We will enforce the config in the server call if needed, but usually
+    # explicitly passing checkpointer is enough.
     return workflow.compile(checkpointer=memory)
 
 workflow_app = build_agent()
