@@ -16,7 +16,7 @@ The agent is live on the Render cloud with a custom chat interface ("Nomad").
 
 **AI agent that books hotels under budget using USDC on Warden Protocol.**
 
- > **Submitted for Warden $1M Agent Incentive Program — $10K Early Bird Eligible**
+ > **Submitted for Warden $1M Agent Incentive Program**
 
 ---
 
