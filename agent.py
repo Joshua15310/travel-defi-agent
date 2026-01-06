@@ -23,18 +23,18 @@ if GROK_API_KEY:
     )
 
 def parse_intent(state):
-    """Robustly find the user request by searching backwards through history."""
+    """
+    Extracts text. If the user replies with a number (selection),
+    we preserve the previous destination/budget to avoid overwriting state.
+    """
     messages = state.get("messages", [])
     text = ""
     
-    # Iterate backwards to find the last real message
+    # 1. Find the user's latest message
     for m in reversed(messages):
-        # Handle different message types correctly
         if hasattr(m, 'content'):
-            # It's a message object (HumanMessage, AIMessage, etc.)
             content = m.content
         elif isinstance(m, dict) and 'content' in m:
-            # It's a dictionary with content
             content = m['content']
         else:
             content = ""
@@ -43,44 +43,60 @@ def parse_intent(state):
             text = content.strip()
             break
             
-    # Default values
-    destination = "Unknown"
-    budget = 400.0
-
+    # Default values (preserve existing state if available)
+    current_dest = state.get("destination", "Unknown")
+    current_budget = state.get("budget_usd", 400.0)
+    
     if not text:
-        return {"destination": destination, "budget_usd": budget, "user_query": ""}
+        return {"user_query": ""}
 
+    # 2. Check if this is just a selection (e.g., "1", "option 2")
+    # If it is, return immediately so we don't overwrite destination with "Unknown"
+    is_selection = False
+    if text.isdigit() and len(text) < 2:
+        is_selection = True
+    elif text.lower().startswith("option ") or text.lower() in ["first", "second", "third"]:
+        is_selection = True
+        
+    if is_selection:
+        return {"user_query": text}
+
+    # 3. Normal Parsing for Search
+    destination = current_dest
+    budget = current_budget
     lowered = text.lower()
     
-    # 1. Extract Destination (Robustly)
+    # Extract Destination
     for token in [" in ", " to ", " at ", " for "]:
         if token in lowered:
             try:
-                # Split and clean punctuation
                 parts = lowered.split(token, 1)
                 if len(parts) > 1:
-                    destination = parts[1].split()[0].strip("?.,!\"'").capitalize()
+                    raw_dest = parts[1].split()[0].strip("?.,!\"'")
+                    if raw_dest:
+                        destination = raw_dest.capitalize()
                     break
             except IndexError:
                 pass
 
-    # Fallback: Use last word if marker search failed
-    if destination == "Unknown":
+    if destination == "Unknown" or destination == current_dest:
         words = text.split()
-        if words:
-            destination = words[-1].strip("?.,!\"'").capitalize()
+        if words and len(words) > 1 and "hotel" in lowered:
+             # Fallback: grab last word if it looks like a city search
+             candidate = words[-1].strip("?.,!\"'").capitalize()
+             if candidate.lower() not in ["hotel", "booking", "room"]:
+                 destination = candidate
 
-    # 2. Extract Budget (Fixing the $500" quote bug)
+    # Extract Budget
     if "$" in text:
         try:
             raw_budget = text.split("$", 1)[1].split()[0]
-            # Remove quotes, commas, and punctuation
             clean_budget = raw_budget.replace(",", "").replace('"', '').replace("'", "").strip("?.,!")
             budget = float(clean_budget)
         except Exception:
             pass
 
-    print(f"[DEBUG] Found User Query: '{text}' -> Dest: {destination}, Budget: {budget}")
+    print(f"[DEBUG] User Query: '{text}' -> Dest: {destination}, Budget: {budget}")
     return {
         "user_query": text,
         "destination": destination,
@@ -89,9 +105,8 @@ def parse_intent(state):
 
 
 def get_destination_data(city):
-    """Returns both ID and Type to support Countries (England) & Cities."""
+    """Returns both ID and Type to support Countries & Cities."""
     if not BOOKING_KEY:
-        print("[WARN] BOOKING_API_KEY not set. Skipping destination lookup.")
         return None, None
 
     try:
@@ -100,57 +115,79 @@ def get_destination_data(city):
             "X-RapidAPI-Key": BOOKING_KEY,
             "X-RapidAPI-Host": "booking-com.p.rapidapi.com"
         }
-        # CRITICAL FIX: Use 'en-us' to prevent 422 errors on free tier
         params = {"name": city, "locale": "en-us"}
-
-        print(f"[DEBUG] Looking up destination: {city}")
         r = requests.get(url, headers=headers, params=params, timeout=10)
         
-        # Log the response for debugging
-        print(f"[DEBUG] Destination lookup status: {r.status_code}")
-        
-        if r.status_code == 422:
-            print(f"[ERROR] 422 Error on destination lookup. Response: {r.text[:200]}")
+        if r.status_code != 200:
             return None, None
             
-        r.raise_for_status()
-        
         data = r.json()
         if data:
-            # Take the first best match (City, Region, or Country)
             first = data[0]
-            dest_id = first.get("dest_id")
-            dest_type = first.get("dest_type")
-            print(f"[DEBUG] Found destination: ID={dest_id}, Type={dest_type}")
-            return dest_id, dest_type
+            return first.get("dest_id"), first.get("dest_type")
             
     except Exception as e:
-        print(f"[ERROR] Failed to get destination data for {city}: {e}")
+        print(f"[ERROR] Dest lookup failed: {e}")
     return None, None
 
 def search_hotels(state):
+    """
+    Handles TWO modes:
+    1. SELECTION: If user replies with "1", pick hotel from previous list.
+    2. SEARCH: If user asks for hotels, fetch from API.
+    """
+    user_query = state.get("user_query", "").lower()
+    existing_hotels = state.get("hotels", [])
+    
+    # --- MODE 1: SELECTION ---
+    # If we have hotels in memory, and the user typed a number, select it.
+    if existing_hotels and (user_query.isdigit() or user_query in ["first", "second", "third", "1", "2", "3", "4", "5"]):
+        try:
+            index = -1
+            if user_query.isdigit():
+                index = int(user_query) - 1
+            elif "first" in user_query: index = 0
+            elif "second" in user_query: index = 1
+            elif "third" in user_query: index = 2
+            
+            if 0 <= index < len(existing_hotels):
+                selected = existing_hotels[index]
+                msg = f"✅ You selected: {selected['name']} (${selected['price']}). Proceeding to book..."
+                return {
+                    "hotel_name": selected["name"],
+                    "hotel_price": selected["price"],
+                    "messages": [HumanMessage(content=msg)]
+                }
+            else:
+                 return {"messages": [HumanMessage(content="⚠️ Invalid number. Please choose 1-5.")]}
+        except Exception:
+            pass
+
+    # --- MODE 2: NEW SEARCH ---
     city = state.get("destination", "Unknown")
     budget = state.get("budget_usd", 400.0)
     
-    # Check if API key is configured
+    if city == "Unknown":
+        return {"messages": [HumanMessage(content="Where would you like to go?")]}
+
+    # API Setup
     if not BOOKING_KEY:
-        print("[ERROR] BOOKING_API_KEY not configured. Using fallback.")
-        fallback = {"name": f"Demo Hotel in {city}", "price": 180.0}
-        msg = f"API key not configured. Using demo data:\n{fallback['name']} - ${fallback['price']}/night"
+        # Mock Data Fallback
+        fallback = [
+            {"name": f"Mock Hotel A in {city}", "price": 150.0},
+            {"name": f"Mock Hotel B in {city}", "price": 250.0},
+            {"name": f"Mock Hotel C in {city}", "price": 90.0}
+        ]
+        msg = f"Found hotels in {city}:\n1. {fallback[0]['name']} - ${fallback[0]['price']}\n2. {fallback[1]['name']} - ${fallback[1]['price']}\n3. {fallback[2]['name']} - ${fallback[2]['price']}\n\nReply with 1, 2, or 3 to book."
         return {
-            "hotels": [fallback],
-            "hotel_name": fallback["name"],
-            "hotel_price": fallback["price"],
+            "hotels": fallback,
+            "hotel_name": None, # IMPORTANT: Don't set this yet!
             "messages": [HumanMessage(content=msg)]
         }
     
-    # Dynamic Lookup (ID + Type)
     dest_id, dest_type = get_destination_data(city)
-    
-    # Fallback to Paris if lookup fails
     if not dest_id:
-        print(f"[WARN] No destination found for {city}. Using Paris fallback.")
-        dest_id = "-1746443"
+        dest_id = "-2601889" # Default London
         dest_type = "city"
 
     tomorrow = date.today() + timedelta(days=1)
@@ -161,8 +198,6 @@ def search_hotels(state):
         "X-RapidAPI-Key": BOOKING_KEY,
         "X-RapidAPI-Host": "booking-com.p.rapidapi.com"
     }
-    
-    # FIX: Add the two REQUIRED parameters that were missing
     params = {
         "dest_id": str(dest_id),
         "dest_type": dest_type,
@@ -172,97 +207,76 @@ def search_hotels(state):
         "room_number": "1",
         "units": "metric",
         "locale": "en-us",
-        "filter_by_currency": "USD",  # REQUIRED PARAMETER
-        "order_by": "popularity"       # REQUIRED PARAMETER
+        "filter_by_currency": "USD",
+        "order_by": "popularity"
     }
-
-    print(f"[DEBUG] Searching hotels with params: {params}")
 
     try:
         response = requests.get(url, headers=headers, params=params, timeout=15)
-        
-        print(f"[DEBUG] Hotel search status: {response.status_code}")
-        
-        if response.status_code == 422:
-            print(f"[ERROR] 422 Error. Response: {response.text[:500]}")
-            raise Exception(f"API Error 422: {response.text[:200]}")
-        
-        if response.status_code != 200:
-            print(f"[ERROR] API Fail {response.status_code}: {response.text[:200]}")
-            raise Exception(f"API Error {response.status_code}")
-        
         data = response.json()
         hotels = []
         
-        print(f"[DEBUG] Found {len(data.get('result', []))} hotels in response")
-        
         for h in data.get("result", [])[:5]:
-            name = h.get("hotel_name", "Unknown Hotel")
-            
-            # Robust Price Extraction
+            name = h.get("hotel_name", "Unknown")
             raw_price = h.get("min_total_price")
             if raw_price is None:
                  raw_price = h.get("price_breakdown", {}).get("all_inclusive_price", 0)
-            
             try:
                 price = float(raw_price)
-            except (TypeError, ValueError):
+            except:
                 price = 0.0
 
-            if price > 0 and price <= budget:
+            if 0 < price <= budget:
                 hotels.append({"name": name, "price": price})
 
         if not hotels:
-            msg = f"No hotels found in {city} under ${budget}."
             return {
                 "hotels": [],
-                "final_status": "No hotels found",
-                "messages": [HumanMessage(content=msg)]
+                "messages": [HumanMessage(content=f"No hotels found in {city} under ${budget}. Try a higher budget.")]
             }
 
-        message = f"Top hotels in {city}:\n" + "\n".join([f"{h['name']} - ${h['price']}/night" for h in hotels])
+        # Format the list for the user
+        options = []
+        for i, h in enumerate(hotels):
+            options.append(f"{i+1}. {h['name']} - ${h['price']}")
         
-        print(f"[DEBUG] Successfully found {len(hotels)} hotels")
+        msg = f"found {len(hotels)} hotels in {city} under ${budget}:\n\n" + "\n".join(options) + "\n\nReply with the number (e.g., '1') to book."
         
         return {
             "hotels": hotels,
-            "hotel_name": hotels[0]["name"],
-            "hotel_price": hotels[0]["price"],
-            "messages": [HumanMessage(content=message)]
+            "hotel_name": None, # Reset selection
+            "messages": [HumanMessage(content=msg)]
         }
 
     except Exception as e:
-        fallback = {"name": f"Mock Hotel in {city}", "price": 150.0}
-        msg = f"Live search failed ({str(e)}). Using demo data:\n{fallback['name']} - ${fallback['price']}/night"
-        print(f"[ERROR] {msg}")
-        return {
-            "hotels": [fallback],
-            "hotel_name": fallback["name"],
-            "hotel_price": fallback["price"],
-            "messages": [HumanMessage(content=msg)]
-        }
+        return {"messages": [HumanMessage(content=f"Search failed: {e}")]}
 
 def check_swap(state):
     return {"needs_swap": False}
 
 def book_hotel(state):
-    hotels = state.get("hotels", [])
+    """
+    Only proceeds if a hotel has been explicitly selected.
+    """
+    hotel_name = state.get("hotel_name")
+    hotel_price = state.get("hotel_price")
     destination = state.get("destination", "Unknown")
 
-    if not hotels:
+    # If no hotel is selected yet, STOP here.
+    if not hotel_name:
         return {
-            "final_status": "No booking made",
-            "messages": [HumanMessage(content="No hotels available to book.")]
+            "final_status": "waiting",
+            # We don't add a message here because search_hotels already asked the question
         }
 
-    chosen = hotels[0]
-    result = warden_client.submit_booking(chosen["name"], chosen["price"], destination, 0.0)
+    # Execute Booking
+    result = warden_client.submit_booking(hotel_name, hotel_price, destination, 0.0)
     tx = result.get("tx_hash", "0xMOCK")
 
     return {
         "final_status": "Booked",
         "tx_hash": tx,
-        "messages": [HumanMessage(content=f"Booked {chosen['name']} in {destination} for ${chosen['price']}. TX {tx}")]
+        "messages": [HumanMessage(content=f"🎉 Successfully booked {hotel_name} for ${hotel_price}. Transaction: {tx}")]
     }
 
 workflow_app = build_workflow(parse_intent, search_hotels, check_swap, book_hotel)
