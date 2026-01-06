@@ -98,49 +98,6 @@ def get_destination_id(city):
 def search_hotels(state):
     city = state["destination"]
 
-    # Hardcoded real hotels for common cities
-    hardcoded_hotels = {
-        "Tokyo": [
-            {"name": "Shinjuku Prince Hotel", "price": 120.0},
-            {"name": "Hotel Gracery Shinjuku", "price": 140.0},
-            {"name": "Tokyo Station Hotel", "price": 160.0},
-            {"name": "Park Hotel Tokyo", "price": 180.0},
-            {"name": "The Ritz-Carlton Tokyo", "price": 200.0},
-        ],
-        "Lagos": [
-            {"name": "Eko Hotels & Suites", "price": 150.0},
-            {"name": "Radisson Blu Anchorage Hotel", "price": 170.0},
-            {"name": "Sheraton Lagos Hotel", "price": 190.0},
-            {"name": "Four Points by Sheraton Lagos", "price": 210.0},
-            {"name": "Lagos Oriental Hotel", "price": 230.0},
-        ],
-        "Paris": [
-            {"name": "Hotel Lutetia", "price": 250.0},
-            {"name": "Shangri-La Hotel Paris", "price": 300.0},
-            {"name": "Hotel Plaza Athenee", "price": 350.0},
-            {"name": "Le Meurice", "price": 400.0},
-            {"name": "Hotel George V", "price": 450.0},
-        ],
-        "New York": [
-            {"name": "The Plaza Hotel", "price": 400.0},
-            {"name": "The St. Regis New York", "price": 450.0},
-            {"name": "Hotel Carlyle", "price": 500.0},
-            {"name": "The Pierre", "price": 550.0},
-            {"name": "Four Seasons Hotel New York", "price": 600.0},
-        ],
-    }
-
-    if city in hardcoded_hotels:
-        hotels = hardcoded_hotels[city]
-        lines = [f"{h['name']} - ${h['price']}/night" for h in hotels]
-        message = f"Top hotels in {city}:\n" + "\n".join(lines)
-        return {
-            "hotels": hotels,
-            "hotel_name": hotels[0]["name"],
-            "hotel_price": hotels[0]["price"],
-            "messages": [HumanMessage(content=message)]
-        }
-
     dest_id = get_destination_id(city)
     if not dest_id:
         # Fallback to mock hotels if no dest_id
@@ -161,7 +118,7 @@ def search_hotels(state):
             "messages": [HumanMessage(content=message)]
         }
 
-    tomorrow = date.today() + timedelta(days=1)
+    tomorrow = date.today() + timedelta(days=2)
     next_day = tomorrow + timedelta(days=1)
 
     try:
@@ -179,7 +136,7 @@ def search_hotels(state):
             "room_number": "1",
             "order_by": "price",
             "filter_by_currency": "USD",
-            "locale": "en-gb"
+            "locale": "en-us"
         }
 
         r = requests.get(url, headers=headers, params=params, timeout=10)
