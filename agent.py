@@ -23,15 +23,18 @@ if GROK_API_KEY:
     )
 
 def parse_intent(state):
-    # Search history for the first non-empty message
+    """Robustly find the user request by searching backwards through history."""
     messages = state.get("messages", [])
     text = ""
+    
+    # Iterate backwards through history to find the actual user query
     for m in reversed(messages):
-        if m.content.strip():
-            text = m.content.strip()
+        content = getattr(m, 'content', '')
+        if content.strip():
+            text = content.strip()
             break
             
-    # Default values if no text is found
+    # Default values if no text is ever found
     destination = "Unknown"
     budget = 400.0
 
@@ -39,31 +42,32 @@ def parse_intent(state):
         return {"destination": destination, "budget_usd": budget}
 
     lowered = text.lower()
-    # Logic to find the destination city
+    # Markers to find the city
     for token in [" in ", " to ", " at ", " for "]:
         if token in lowered:
-            # Grab the next word and capitalize it
-            destination = lowered.split(token, 1)[1].split()[0].capitalize()
+            destination = lowered.split(token, 1)[1].split()[0].strip("?.").capitalize()
             break
 
-    # If no markers found, use the last word of the sentence
+    # If no markers, use the last word (common for simple "Paris" or "Lagos" inputs)
     if destination == "Unknown":
         words = text.split()
         if words:
             destination = words[-1].strip("?.").capitalize()
 
-    # Extract budget if a '$' is present
+    # Budget extraction
     if "$" in text:
         try:
             budget = float(text.split("$", 1)[1].split()[0].replace(",", ""))
         except:
             pass
 
-    print(f"[DEBUG] Parsed Destination: {destination}, Budget: {budget}")
+    print(f"[DEBUG] Found User Query: '{text}' -> Destination: {destination}")
     return {
+        "user_query": text,
         "destination": destination,
         "budget_usd": budget
     }
+
 
 def get_destination_id(city):
     if not BOOKING_KEY:
