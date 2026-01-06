@@ -162,7 +162,7 @@ def search_hotels(state):
         "X-RapidAPI-Host": "booking-com.p.rapidapi.com"
     }
     
-    # CRITICAL FIX: Clean parameters (No order_by, en-us locale)
+    # FIX: Add the two REQUIRED parameters that were missing
     params = {
         "dest_id": str(dest_id),
         "dest_type": dest_type,
@@ -171,7 +171,9 @@ def search_hotels(state):
         "adults_number": "1",
         "room_number": "1",
         "units": "metric",
-        "locale": "en-us"
+        "locale": "en-us",
+        "filter_by_currency": "USD",  # REQUIRED PARAMETER
+        "order_by": "popularity"       # REQUIRED PARAMETER
     }
 
     print(f"[DEBUG] Searching hotels with params: {params}")
