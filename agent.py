@@ -30,7 +30,10 @@ def parse_intent(state):
     # NEW LOGIC: Iterate backwards to skip blank UI noise
     for m in reversed(messages):
         # Handle both object and dict styles
-        content = getattr(m, 'content', m.get('content', '')) if isinstance(m, (object, dict)) else ""
+        if isinstance(m, dict):
+            content = m.get('content', '')
+        else:
+            content = getattr(m, 'content', '')
         if content.strip():
             text = content.strip()
             break
