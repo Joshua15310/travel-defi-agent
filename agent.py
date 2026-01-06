@@ -1,4 +1,4 @@
-# agent.py - Crypto Travel Booker (Single File Version)
+# agent.py - Crypto Travel Booker (Final Fix)
 import os
 import requests
 from dotenv import load_dotenv
@@ -18,8 +18,8 @@ load_dotenv()
 BOOKING_KEY = os.getenv("BOOKING_API_KEY")
 GROK_API_KEY = os.getenv("GROK_API_KEY")
 
-# --- 1. Define State Schema (Updated) ---
-# total=False makes all fields optional, fixing the 422 Error
+# --- CRITICAL FIX HERE ---
+# added 'total=False'. This fixes the 422 Error by making fields optional.
 class AgentState(TypedDict, total=False):
     messages: List[BaseMessage]
     user_query: str
@@ -33,7 +33,7 @@ class AgentState(TypedDict, total=False):
     final_status: str
     tx_hash: str
 
-# --- 2. Node Functions ---
+# --- Node Functions ---
 
 def parse_intent(state):
     """Extracts text and preserves state for multi-turn conversation."""
@@ -52,7 +52,7 @@ def parse_intent(state):
             text = content.strip()
             break
             
-    # Preserve existing state
+    # Preserve existing state safely
     current_dest = state.get("destination", "Unknown")
     current_budget = state.get("budget_usd", 400.0)
     
@@ -156,7 +156,6 @@ def search_hotels(state):
     if city == "Unknown":
         return {"messages": [HumanMessage(content="Where would you like to go?")]}
 
-    # API / Mock Data Logic
     if not BOOKING_KEY:
         fallback = [
             {"name": f"Mock Hotel A in {city}", "price": 150.0},
@@ -230,7 +229,7 @@ def book_hotel(state):
         "messages": [HumanMessage(content=f"🎉 Successfully booked {hotel_name} for ${hotel_price}. Transaction: {tx}")]
     }
 
-# --- 3. Build Graph (INLINED) ---
+# --- Build Graph ---
 def build_agent():
     workflow = StateGraph(AgentState)
     
@@ -250,11 +249,9 @@ def build_agent():
     workflow.add_edge("swap", "book")
     workflow.add_edge("book", END)
     
-    # Initialize Memory Here
     memory = MemorySaver()
     return workflow.compile(checkpointer=memory)
 
-# --- 4. Export the App ---
 workflow_app = build_agent()
 
 if __name__ == "__main__":
