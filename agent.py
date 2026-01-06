@@ -27,28 +27,30 @@ def parse_intent(state):
     messages = state.get("messages", [])
     text = ""
     
-    # Iterate backwards through history to find the actual user query
+    # NEW LOGIC: Iterate backwards to skip blank UI noise
     for m in reversed(messages):
-        content = getattr(m, 'content', '')
+        # Handle both object and dict styles
+        content = getattr(m, 'content', m.get('content', '')) if isinstance(m, (object, dict)) else ""
         if content.strip():
             text = content.strip()
             break
             
-    # Default values if no text is ever found
+    # Default values
     destination = "Unknown"
     budget = 400.0
 
     if not text:
-        return {"destination": destination, "budget_usd": budget}
+        return {"destination": destination, "budget_usd": budget, "user_query": ""}
 
     lowered = text.lower()
     # Markers to find the city
     for token in [" in ", " to ", " at ", " for "]:
         if token in lowered:
+            # Extract word after token and capitalize
             destination = lowered.split(token, 1)[1].split()[0].strip("?.").capitalize()
             break
 
-    # If no markers, use the last word (common for simple "Paris" or "Lagos" inputs)
+    # Robust Fallback: if no markers, use the last word (e.g. user just typed "Lagos")
     if destination == "Unknown":
         words = text.split()
         if words:
