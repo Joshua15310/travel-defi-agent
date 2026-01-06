@@ -1,47 +1,30 @@
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 from langserve import add_routes
-from langchain_core.runnables import RunnableLambda
-from langchain_core.messages import HumanMessage
-from pydantic import BaseModel
-from typing import List, Dict, Any
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.output_parsers import StrOutputParser
 
-from agent import workflow_app
+from agent import agent
 
 app = FastAPI(
-    title="Travel DeFi Agent",
+    title="Crypto Travel DeFi Agent",
     version="1.0"
 )
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"]
+prompt = ChatPromptTemplate.from_messages(
+    [
+        ("system", "You are a crypto travel booking agent. You find hotels under budget and return prices."),
+        MessagesPlaceholder(variable_name="messages")
+    ]
 )
 
-class InputSchema(BaseModel):
-    messages: List[Dict[str, Any]]
-
-def adapter(data):
-    msgs = []
-    for m in data["messages"]:
-        if m.get("content"):
-            msgs.append(HumanMessage(content=m["content"]))
-
-    return {
-        "messages": msgs
-    }
-
-chain = RunnableLambda(adapter) | workflow_app
+chain = prompt | agent | StrOutputParser()
 
 add_routes(
     app,
     chain,
-    path="/agent",
-    playground_type="default"
+    path="/agent"
 )
 
-@app.get("/")
-def root():
-    return {"status": "ok"}
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
