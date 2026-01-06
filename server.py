@@ -1,79 +1,27 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse
 from langserve import add_routes
-from langchain_core.runnables import RunnableLambda
-from langchain_core.messages import HumanMessage, AIMessage
-from pydantic import BaseModel, Field
-from typing import List, Union, Dict, Any
+# Import the agent we created in agent.py
+from agent import workflow_app
 
-# Import workflow_app from agent.py (this was the source of your error)
-from agent import workflow_app as graph
+app = FastAPI(title="Crypto Travel Agent")
 
-app = FastAPI(
-    title="Crypto Travel DeFi Agent",
-    version="1.0",
-    description="A LangGraph agent hosted on Render"
-)
-
-# CORS Setup
+# --- FIX: Enable CORS ---
+# This tells the server: "Accept requests from any website or local file"
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # Allows ALL origins (crucial for local HTML files)
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["*"],  # Allows all HTTP methods (POST, GET, etc.)
+    allow_headers=["*"],  # Allows all headers
 )
 
-@app.get("/")
-def redirect_to_docs():
-    return RedirectResponse(url="/docs")
-
-# --- INPUT ADAPTER ---
-class SimpleInput(BaseModel):
-    query: str = Field(
-        default="", 
-        description="Your travel booking query, e.g., 'book a hotel in Lagos for $400'"
-    )
-
-def input_adapter(input_data: Dict[str, Any]) -> Dict[str, Any]:
-    """Ensures the agent receives valid input and filters empty messages."""
-    query = input_data.get("query", "").strip()
-    converted = []
-    
-    if query:
-        converted.append(HumanMessage(content=query))
-    else:
-        converted.append(HumanMessage(content=""))
-
-    return {
-        "messages": converted,
-        "user_query": query,
-        "destination": "unknown", 
-        "budget_usd": 0.0,
-        "hotel_name": "none",
-        "hotel_price": 0.0,
-        "hotels": [],
-        "needs_swap": False,
-        "swap_amount": 0.0,
-        "final_status": "started",
-        "tx_hash": "none"
-    }
-
-# Create the Runnable chain with the adapter and the compiled graph
-clean_agent = RunnableLambda(input_adapter).with_types(input_type=SimpleInput) | graph
-
-# Add Routes
-add_routes(
-    app,
-    clean_agent,
-    path="/agent",
-    playground_type="default"
-)
+# Add the agent routes
+add_routes(app, workflow_app, path="/agent")
 
 if __name__ == "__main__":
     import uvicorn
-    # Use standard 8000 for local; Render uses the $PORT env var
+    # Look for the PORT environment variable (Render sets this automatically)
     import os
-    port = int(os.getenv("PORT", 8000))
+    port = int(os.environ.get("PORT", 10000))
     uvicorn.run(app, host="0.0.0.0", port=port)
