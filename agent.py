@@ -96,57 +96,69 @@ def get_destination_id(city):
     return None
 
 def search_hotels(state):
-    destination = state["destination"]
-    budget = state["budget_usd"]
-    url = "https://booking-com.p.rapidapi.com/v1/hotels/search"
-    params = {
-        "checkout_date": "2026-01-20",
-        "order_by": "price",
-        "adults_number": "1",
-        "filter_by_currency": "USD",
-        "locale": "en-gb",
-        "checkin_date": "2026-01-19",
-        "units": "metric",
-        "dest_id": "-1746443",  # fallback ID (Paris) — we can improve later
-        "dest_type": "city",
-        "room_number": "1"
-    }
+    city = state.get("destination", "Unknown")
+    budget = state.get("budget_usd", 400.0)
+    
+    # Keep your dynamic ID lookup!
+    dest_id = get_destination_id(city)
+    
+    # Use dynamic dates so it never expires
+    tomorrow = date.today() + timedelta(days=1)
+    next_day = tomorrow + timedelta(days=1)
 
+    url = "https://booking-com.p.rapidapi.com/v1/hotels/search"
     headers = {
         "X-RapidAPI-Key": os.getenv("BOOKING_API_KEY"),
         "X-RapidAPI-Host": "booking-com.p.rapidapi.com"
+    }
+    params = {
+        "dest_id": str(dest_id) if dest_id else "-1746443", # Paris only if lookup fails
+        "dest_type": "city",
+        "checkin_date": tomorrow.strftime("%Y-%m-%d"),
+        "checkout_date": next_day.strftime("%Y-%m-%d"),
+        "adults_number": "1",
+        "room_number": "1",
+        "units": "metric",
+        "locale": "en-gb"
     }
 
     try:
         response = requests.get(url, headers=headers, params=params, timeout=15)
         if response.status_code != 200:
-            raise Exception(f"API error {response.status_code}")
+            raise Exception(f"API Error {response.status_code}")
+        
         data = response.json()
         hotels = []
-        for hotel in data.get("result", [])[:5]:
-            name = hotel.get("hotel_name", "Unknown Hotel")
-            price = hotel.get("price_breakdown", {}).get("all_inclusive_price", 0)
+        for h in data.get("result", [])[:5]:
+            name = h.get("hotel_name", "Unknown Hotel")
+            # Using min_total_price for free-tier safety
+            price = float(h.get("min_total_price", h.get("price_breakdown", {}).get("all_inclusive_price", 0)))
             if price <= budget:
                 hotels.append({"name": name, "price": price})
+
         if not hotels:
             raise Exception("No hotels found under budget")
-        selected = hotels[0]  # pick cheapest
-        message = f"Top hotels in {destination}:\n" + "\n".join([f"{h['name']} - ${h['price']}/night" for h in hotels])
+
+        message = f"Top hotels in {city}:\n" + "\n".join([f"{h['name']} - ${h['price']}/night" for h in hotels])
+        
         return {
-            "hotel_name": selected["name"],
-            "hotel_price": selected["price"],
+            "hotels": hotels, # Keep this for the book_hotel node!
+            "hotel_name": hotels[0]["name"],
+            "hotel_price": hotels[0]["price"],
             "messages": [HumanMessage(content=message)]
         }
+
     except Exception as e:
-        # Soft fallback — still show something useful
-        message = f"Real Booking.com search failed ({str(e)}). Using sample data for demo:\nSample Hotel in {destination} - $180/night"
+        # Fallback that still allows the chain to continue
+        fallback_hotel = {"name": f"Comfort Inn {city}", "price": 180.0}
+        message = f"Live search failed ({str(e)}). Using demo data:\n{fallback_hotel['name']} - ${fallback_hotel['price']}/night"
         return {
-            "hotel_name": f"Sample Hotel in {destination}",
-            "hotel_price": 180.0,
+            "hotels": [fallback_hotel],
+            "hotel_name": fallback_hotel["name"],
+            "hotel_price": fallback_hotel["price"],
             "messages": [HumanMessage(content=message)]
         }
-    
-    
+
 
 def check_swap(state):
     return {"needs_swap": False}
