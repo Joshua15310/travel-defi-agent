@@ -61,8 +61,9 @@ def parse_intent(state):
     messages = state.get("messages", [])
     query = ""
     for m in reversed(messages):
-        if m.content and m.content.strip():
-            query = m.content
+        content = getattr(m, 'content', m.get('content', '')) if isinstance(m, (object, dict)) else ""
+        if content and content.strip():
+            query = content
             break
             
     if not query:
@@ -77,14 +78,17 @@ def parse_intent(state):
     destination = "Paris" # Default
     budget = 400.0
     
-    # Simple Rule-Based Parsing (Reliable fallback)
+    # Simple Rule-Based Parsing
     lower_query = query.lower()
     
-    # Check for specific cities we support
-    known_cities = ["new york", "london", "paris", "tokyo", "dubai", "berlin"]
-    for city in known_cities:
-        if city in lower_query:
-            destination = city.title() # Convert "new york" -> "New York"
+    # Extract destination city (look for common travel cities or extract name)
+    # This logic now handles extracting names even if not in a pre-defined list
+    markers = ["to ", "in ", "at "]
+    for marker in markers:
+        if marker in lower_query:
+            dest_part = lower_query.split(marker, 1)[-1].strip()
+            # Take the first word or words until a budget marker
+            destination = dest_part.split("$")[0].strip().title()
             break
             
     # Extract Budget ($)
@@ -102,33 +106,54 @@ def parse_intent(state):
         "budget_usd": budget
     }
 
+# === DYNAMIC LOCATION HELPER ===
+def get_destination_id(city_name):
+    """Helper to fetch the real Booking.com ID for ANY city dynamically."""
+    if not BOOKING_KEY:
+        return None
+        
+    url = "https://booking-com.p.rapidapi.com/v1/hotels/locations"
+    querystring = {"name": city_name, "locale": "en-gb"}
+    headers = {
+        "X-RapidAPI-Key": BOOKING_KEY,
+        "X-RapidAPI-Host": "booking-com.p.rapidapi.com"
+    }
+    try:
+        print(f"[SEARCH] Looking up destination ID for: {city_name}")
+        response = requests.get(url, headers=headers, params=querystring, timeout=10)
+        locations = response.json()
+        
+        # Look for the first result that matches 'city'
+        for loc in locations:
+            if loc.get("dest_type") == "city":
+                print(f"[SEARCH] Found ID {loc.get('dest_id')} for {city_name}")
+                return loc.get("dest_id")
+    except Exception as e:
+        print(f"[ERROR] Location lookup failed: {e}")
+    return None
 
 # === 2. Search Hotels on Booking.com ===
 def search_hotels(state, live=True):
-    # 1. Check Key
-    if not BOOKING_KEY:
+    """Search for hotels on Booking.com using a dynamic ID lookup."""
+    target_city = state.get("destination", "Paris")
+    
+    # 1. DYNAMICALLY find the ID for the city instead of a hardcoded list
+    dest_id = get_destination_id(target_city)
+    
+    # Check Key and provide fallback if needed
+    if not BOOKING_KEY or not dest_id:
+        if not BOOKING_KEY:
+            print("[SEARCH] No API key found. Using mocked fallback.")
+        else:
+            print(f"[WARN] Could not find ID for {target_city}. Using mocked fallback.")
+            
         return {
             "hotel_name": "Budget Hotel",
             "hotel_price": 180.0,
-            "messages": [HumanMessage(content=f"Found Budget Hotel in {state.get('destination','Unknown')} for $180.0/night")]
+            "messages": [HumanMessage(content=f"Found Budget Hotel in {target_city} for $180.0/night")]
         }
 
-    # 2. Map Cities to Real IDs (The "Smart" Fix)
-    # These are real Booking.com Destination IDs
-    CITY_IDS = {
-        "Paris": "-1456928",
-        "New York": "20088325",
-        "London": "-2601889",
-        "Tokyo": "-246227",
-        "Berlin": "-1746443",
-        "Dubai": "-782831"
-    }
-    
-    target_city = state.get("destination", "Paris")
-    # Default to Paris ID if city not found
-    dest_id = CITY_IDS.get(target_city, "-1456928") 
-
-    # 3. Calculate Dates
+    # 2. Calculate Dates
     tomorrow = date.today() + timedelta(days=1)
     next_day = date.today() + timedelta(days=2)
 
@@ -136,7 +161,7 @@ def search_hotels(state, live=True):
     querystring = {
         "checkout_date": next_day.strftime("%Y-%m-%d"),
         "units": "metric",
-        "dest_id": dest_id,  # <--- USES THE CORRECT ID NOW
+        "dest_id": dest_id,
         "dest_type": "city",
         "locale": "en-gb",
         "adults_number": "1",
@@ -152,20 +177,25 @@ def search_hotels(state, live=True):
     }
 
     try:
-        print(f"[SEARCH] Searching {target_city} (ID: {dest_id})...")
+        print(f"[SEARCH] Live Query to Booking.com for '{target_city}' (ID: {dest_id})...")
         response = requests.get(url, headers=headers, params=querystring, timeout=10)
         data = response.json()
         
-        if data.get("result"):
+        if data.get("result") and len(data["result"]) > 0:
             hotel = data["result"][0]
             name = hotel.get("hotel_name", "Budget Hotel")
-            price = float(hotel.get("price_breakdown", {}).get("all_inclusive_price", 180.0))
-            if price < 10: price = 180.0
+            try:
+                price = float(hotel.get("price_breakdown", {}).get("all_inclusive_price", 180.0))
+                if price < 10: price = 180.0
+            except:
+                price = 180.0
+            print(f"[SEARCH] Success! Found {name} for ${price}/night")
         else:
+            print("[SEARCH] No results from API. Using mocked fallback.")
             name, price = "Budget Hotel", 180.0
             
     except Exception as e:
-        print(f"[ERROR] Search failed: {e}")
+        print(f"[ERROR] Live search failed: {e}")
         name, price = "Budget Hotel", 180.0
 
     return {
