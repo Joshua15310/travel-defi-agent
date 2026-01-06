@@ -8,7 +8,7 @@ from agent import workflow_app
 
 app = FastAPI(title="Crypto Travel Agent")
 
-# 1. Enable CORS (Allows your local HTML file to talk to the server)
+# 1. Enable CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -17,11 +17,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 2. STANDARD ROUTE: LangServe (Keep this for the Playground)
+# 2. Add LangServe Routes
 add_routes(app, workflow_app, path="/agent")
 
-# 3. CUSTOM ROUTE: The "Silver Bullet" Fix 🔫
-# This endpoint accepts simple JSON and handles the complex config on the server.
+# 3. Custom Chat Endpoint (For your index.html)
 @app.post("/chat")
 async def chat_endpoint(request: Request):
     try:
@@ -32,14 +31,11 @@ async def chat_endpoint(request: Request):
         if not user_message:
             return JSONResponse({"error": "No message provided"}, status_code=400)
 
-        # We construct the complex LangGraph payload HERE, on the server.
-        # This guarantees the format is 100% correct every time.
         response = await workflow_app.ainvoke(
             input={"messages": [{"content": user_message, "type": "human"}]},
             config={"configurable": {"thread_id": thread_id}}
         )
 
-        # Extract just the last message to send back to the UI
         last_message = response["messages"][-1].content
         return JSONResponse({"reply": last_message})
 
@@ -47,10 +43,11 @@ async def chat_endpoint(request: Request):
         print(f"Error in /chat: {e}")
         return JSONResponse({"error": str(e)}, status_code=500)
 
-# 4. Root Redirect
+# 4. FIX: Root Redirect (Added Trailing Slash)
+# This forces the browser to load the playground assets correctly.
 @app.get("/")
 async def redirect_root_to_playground():
-    return RedirectResponse(url="/agent/playground")
+    return RedirectResponse(url="/agent/playground/") 
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
