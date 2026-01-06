@@ -53,6 +53,7 @@ def input_adapter(input_data: Dict[str, Any]) -> Dict[str, Any]:
         "budget_usd": 0.0,
         "hotel_name": "none",
         "hotel_price": 0.0,
+        "hotels": [],
         "needs_swap": False,
         "swap_amount": 0.0,
         "final_status": "started",

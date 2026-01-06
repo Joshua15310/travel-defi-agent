@@ -19,6 +19,7 @@ class AgentState(TypedDict):
     budget_usd: float
     hotel_name: str
     hotel_price: float
+    hotels: list
     needs_swap: bool
     swap_amount: float
     final_status: str
