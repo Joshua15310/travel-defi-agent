@@ -1,39 +1,17 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Travel Agent Demo</title>
-    <style>
-        body { font-family: sans-serif; max-width: 600px; margin: 2rem auto; padding: 0 1rem; background: #f4f4f9; }
-        .chat-container { background: white; border-radius: 10px; padding: 1rem; height: 500px; overflow-y: auto; box-shadow: 0 2px 10px rgba(0,0,0,0.1); display: flex; flex-direction: column; }
-        .message { margin: 10px 0; padding: 10px 15px; border-radius: 15px; max-width: 80%; line-height: 1.4; }
-        .user { align-self: flex-end; background: #007bff; color: white; border-bottom-right-radius: 2px; }
-        .agent { align-self: flex-start; background: #e9ecef; color: #333; border-bottom-left-radius: 2px; white-space: pre-wrap; }
-        .input-area { margin-top: 1rem; display: flex; gap: 10px; }
-        input { flex: 1; padding: 12px; border: 1px solid #ddd; border-radius: 5px; outline: none; }
-        button { padding: 12px 24px; background: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: bold; }
-        button:disabled { background: #ccc; }
-        .loading { font-size: 0.8rem; color: #666; margin-top: 5px; display: none; text-align: center; }
-    </style>
-</head>
-<body>
+<script>
+        // --- 1. Robust Thread ID Generation ---
+        // This works on ALL browsers and file locations
+        function generateUUID() {
+            return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+                var r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
+                return v.toString(16);
+            });
+        }
+        
+        const threadId = generateUUID();
+        console.log("Using Thread ID:", threadId); // <--- Check your browser console for this!
 
-    <h2>✈️ Crypto Travel Agent</h2>
-    <div class="chat-container" id="chat">
-        <div class="message agent">Hello! I can help you book hotels using crypto. Try saying "Book a hotel in London for $300".</div>
-    </div>
-    <div class="loading" id="loader">Agent is thinking...</div>
-    
-    <div class="input-area">
-        <input type="text" id="userInput" placeholder="Type your request..." onkeypress="handleEnter(event)">
-        <button onclick="sendMessage()" id="sendBtn">Send</button>
-    </div>
-
-    <script>
-        // 1. Generate a random Thread ID for this session
-        const threadId = crypto.randomUUID();
-        // 2. Point to your Render URL (Ensure no trailing slash issues)
+        // 2. Point to your Render URL
         const AGENT_URL = "https://crypto-defi-agent.onrender.com/agent/invoke";
 
         function handleEnter(e) {
@@ -45,12 +23,12 @@
             const text = input.value.trim();
             if (!text) return;
 
-            // Add User Message to UI
             addMessage(text, "user");
             input.value = "";
             setLoading(true);
 
-            // Construct the payload exactly how LangGraph expects it
+            // --- 3. Construct Payload ---
+            // This is the EXACT format LangGraph needs
             const payload = {
                 input: {
                     messages: [{ content: text, type: "human" }]
@@ -61,6 +39,8 @@
                     }
                 }
             };
+
+            console.log("Sending Payload:", JSON.stringify(payload)); // <--- Debug print
 
             try {
                 const response = await fetch(AGENT_URL, {
@@ -76,7 +56,6 @@
 
                 const data = await response.json();
                 
-                // Extract the last message content properly
                 let lastMsg = "No response content.";
                 if (data.output && data.output.messages && data.output.messages.length > 0) {
                     const msgs = data.output.messages;
@@ -108,5 +87,3 @@
             document.getElementById("sendBtn").disabled = isLoading;
         }
     </script>
-</body>
-</html>
