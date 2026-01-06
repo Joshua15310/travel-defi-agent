@@ -70,12 +70,12 @@ def input_adapter(input_data: Dict[str, Any]) -> Dict[str, Any]:
 # We explicitly set playground_type="chat" here
 clean_agent = RunnableLambda(input_adapter).with_types(input_type=SimpleInput) | graph
 
-# 4. Add Routes
+# 4. Add Routes - Set to "default" to fix the error in Screenshot 301
 add_routes(
     app,
     clean_agent,
     path="/agent",
-    playground_type="chat" # <--- THIS IS THE MAGIC LINE
+    playground_type="default" # <--- Change this from "chat" to "default"
 )
 
 if __name__ == "__main__":
