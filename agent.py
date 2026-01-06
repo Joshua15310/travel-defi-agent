@@ -1,4 +1,4 @@
-# agent.py - Crypto Travel Booker (Safety Net Version)
+# agent.py - Crypto Travel Booker (Final Polish)
 import os
 import requests
 from dotenv import load_dotenv
@@ -7,7 +7,6 @@ from typing import TypedDict, List, Optional
 
 # LangChain / LangGraph Imports
 from langchain_core.messages import HumanMessage, BaseMessage
-from langchain_core.runnables import RunnableConfig
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 
@@ -16,9 +15,8 @@ import warden_client
 load_dotenv()
 
 BOOKING_KEY = os.getenv("BOOKING_API_KEY")
-GROK_API_KEY = os.getenv("GROK_API_KEY")
 
-# State Definition (Flexible)
+# State Definition
 class AgentState(TypedDict, total=False):
     messages: List[BaseMessage]
     user_query: str
@@ -194,7 +192,7 @@ def search_hotels(state: AgentState):
             return {"hotels": [], "messages": [HumanMessage(content=f"No hotels found in {city} under ${budget}.")]}
 
         options = [f"{i+1}. {h['name']} - ${h['price']}" for i, h in enumerate(hotels)]
-        msg = f"found {len(hotels)} hotels in {city} under ${budget}:\n\n" + "\n".join(options) + "\n\nReply with the number (e.g., '1') to book."
+        msg = f"Found {len(hotels)} hotels in {city} under ${budget}:\n\n" + "\n".join(options) + "\n\nReply with the number (e.g., '1') to book."
         
         return {
             "hotels": hotels,
@@ -218,10 +216,15 @@ def book_hotel(state):
     result = warden_client.submit_booking(hotel_name, hotel_price, destination, 0.0)
     tx = result.get("tx_hash", "0xMOCK")
 
+    # --- FEATURE UPGRADE: Clickable Link ---
+    # We return HTML here. The updated index.html will render this as a clickable link.
+    tx_url = f"https://sepolia.etherscan.io/tx/{tx}"
+    msg = f"🎉 <b>Successfully booked!</b><br>Hotel: {hotel_name}<br>Price: ${hotel_price}<br><br>👉 <a href='{tx_url}' target='_blank' style='color: #007bff; text-decoration: none;'>View Transaction on Etherscan</a>"
+
     return {
         "final_status": "Booked",
         "tx_hash": tx,
-        "messages": [HumanMessage(content=f"🎉 Successfully booked {hotel_name} for ${hotel_price}. Transaction: {tx}")]
+        "messages": [HumanMessage(content=msg)]
     }
 
 # --- Graph Construction ---
@@ -244,12 +247,7 @@ def build_agent():
     workflow.add_edge("swap", "book")
     workflow.add_edge("book", END)
     
-    # Initialize Memory
     memory = MemorySaver()
-    
-    # COMPILE WITHOUT DEFAULT CONFIG
-    # We will enforce the config in the server call if needed, but usually
-    # explicitly passing checkpointer is enough.
     return workflow.compile(checkpointer=memory)
 
 workflow_app = build_agent()
