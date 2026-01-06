@@ -134,8 +134,6 @@ def search_hotels(state):
             "checkout_date": next_day.strftime("%Y-%m-%d"),
             "adults_number": "1",
             "room_number": "1",
-            "order_by": "price",
-            "filter_by_currency": "USD",
             "locale": "en-us"
         }
 
@@ -167,7 +165,7 @@ def search_hotels(state):
 
         for h in data["result"][:5]:
             name = h.get("hotel_name", "Unknown Hotel")
-            price = float(h.get("price_breakdown", {}).get("all_inclusive_price", 0))
+            price = float(h.get("min_price", 0))
             hotels.append({"name": name, "price": price})
             lines.append(f"{name} - ${price}/night")
 
