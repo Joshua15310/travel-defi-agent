@@ -159,8 +159,15 @@ def book_hotel(state):
         ]
     }
 
-# expose workflow for server import
-__all__ = ["workflow_app"]
+# ... (all your node functions: parse_intent, search_hotels, etc.)
 
+# === BUILD WORKFLOW ===
 workflow_app = build_workflow(parse_intent, search_hotels, check_swap, book_hotel)
+
+# === STANDBY MODE ===
+if __name__ == "__main__":
+    import time
+    print("\n✅ Agent finished. Entering standby...")
+    while True:
+        time.sleep(600)
 
