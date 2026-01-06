@@ -29,8 +29,16 @@ def parse_intent(state):
     
     # Iterate backwards to find the last real message
     for m in reversed(messages):
-        # Handle message objects (HumanMessage) or dicts
-        content = getattr(m, 'content', m.get('content', '')) if isinstance(m, (object, dict)) else ""
+        # Handle different message types correctly
+        if hasattr(m, 'content'):
+            # It's a message object (HumanMessage, AIMessage, etc.)
+            content = m.content
+        elif isinstance(m, dict) and 'content' in m:
+            # It's a dictionary with content
+            content = m['content']
+        else:
+            content = ""
+            
         if content and content.strip():
             text = content.strip()
             break
@@ -83,6 +91,7 @@ def parse_intent(state):
 def get_destination_data(city):
     """Returns both ID and Type to support Countries (England) & Cities."""
     if not BOOKING_KEY:
+        print("[WARN] BOOKING_API_KEY not set. Skipping destination lookup.")
         return None, None
 
     try:
@@ -94,14 +103,26 @@ def get_destination_data(city):
         # CRITICAL FIX: Use 'en-us' to prevent 422 errors on free tier
         params = {"name": city, "locale": "en-us"}
 
+        print(f"[DEBUG] Looking up destination: {city}")
         r = requests.get(url, headers=headers, params=params, timeout=10)
+        
+        # Log the response for debugging
+        print(f"[DEBUG] Destination lookup status: {r.status_code}")
+        
+        if r.status_code == 422:
+            print(f"[ERROR] 422 Error on destination lookup. Response: {r.text[:200]}")
+            return None, None
+            
         r.raise_for_status()
         
         data = r.json()
         if data:
             # Take the first best match (City, Region, or Country)
             first = data[0]
-            return first.get("dest_id"), first.get("dest_type")
+            dest_id = first.get("dest_id")
+            dest_type = first.get("dest_type")
+            print(f"[DEBUG] Found destination: ID={dest_id}, Type={dest_type}")
+            return dest_id, dest_type
             
     except Exception as e:
         print(f"[ERROR] Failed to get destination data for {city}: {e}")
@@ -111,12 +132,24 @@ def search_hotels(state):
     city = state.get("destination", "Unknown")
     budget = state.get("budget_usd", 400.0)
     
+    # Check if API key is configured
+    if not BOOKING_KEY:
+        print("[ERROR] BOOKING_API_KEY not configured. Using fallback.")
+        fallback = {"name": f"Demo Hotel in {city}", "price": 180.0}
+        msg = f"API key not configured. Using demo data:\n{fallback['name']} - ${fallback['price']}/night"
+        return {
+            "hotels": [fallback],
+            "hotel_name": fallback["name"],
+            "hotel_price": fallback["price"],
+            "messages": [HumanMessage(content=msg)]
+        }
+    
     # Dynamic Lookup (ID + Type)
     dest_id, dest_type = get_destination_data(city)
     
     # Fallback to Paris if lookup fails
     if not dest_id:
-        print(f"[WARN] No destination found for {city}. Using fallback.")
+        print(f"[WARN] No destination found for {city}. Using Paris fallback.")
         dest_id = "-1746443"
         dest_type = "city"
 
@@ -125,7 +158,7 @@ def search_hotels(state):
 
     url = "https://booking-com.p.rapidapi.com/v1/hotels/search"
     headers = {
-        "X-RapidAPI-Key": os.getenv("BOOKING_API_KEY"),
+        "X-RapidAPI-Key": BOOKING_KEY,
         "X-RapidAPI-Host": "booking-com.p.rapidapi.com"
     }
     
@@ -141,15 +174,25 @@ def search_hotels(state):
         "locale": "en-us"
     }
 
+    print(f"[DEBUG] Searching hotels with params: {params}")
+
     try:
         response = requests.get(url, headers=headers, params=params, timeout=15)
         
+        print(f"[DEBUG] Hotel search status: {response.status_code}")
+        
+        if response.status_code == 422:
+            print(f"[ERROR] 422 Error. Response: {response.text[:500]}")
+            raise Exception(f"API Error 422: {response.text[:200]}")
+        
         if response.status_code != 200:
-            print(f"[ERROR] API Fail {response.status_code}: {response.url}")
+            print(f"[ERROR] API Fail {response.status_code}: {response.text[:200]}")
             raise Exception(f"API Error {response.status_code}")
         
         data = response.json()
         hotels = []
+        
+        print(f"[DEBUG] Found {len(data.get('result', []))} hotels in response")
         
         for h in data.get("result", [])[:5]:
             name = h.get("hotel_name", "Unknown Hotel")
@@ -177,6 +220,8 @@ def search_hotels(state):
 
         message = f"Top hotels in {city}:\n" + "\n".join([f"{h['name']} - ${h['price']}/night" for h in hotels])
         
+        print(f"[DEBUG] Successfully found {len(hotels)} hotels")
+        
         return {
             "hotels": hotels,
             "hotel_name": hotels[0]["name"],
@@ -187,6 +232,7 @@ def search_hotels(state):
     except Exception as e:
         fallback = {"name": f"Mock Hotel in {city}", "price": 150.0}
         msg = f"Live search failed ({str(e)}). Using demo data:\n{fallback['name']} - ${fallback['price']}/night"
+        print(f"[ERROR] {msg}")
         return {
             "hotels": [fallback],
             "hotel_name": fallback["name"],
