@@ -47,35 +47,27 @@ if GROK_API_KEY:
 
 # === 1. Parse User ===
 def parse_intent(state):
-    """Robustly extract intent even if leading messages are empty."""
-    messages = state.get("messages", [])
-    query = ""
-    # Find the last message that actually HAS text
-    for m in reversed(messages):
-        content = getattr(m, 'content', m.get('content', '')) if isinstance(m, (object, dict)) else ""
-        if content.strip():
-            query = content
-            break
-            
-    destination = "Paris"
+    query = state["messages"][-1].content.lower()
+    destination = "Paris"  # default
     budget = 400.0
 
-    if query:
-        lower_query = query.lower()
-        markers = ["to ", "in ", "at "]
-        for marker in markers:
-            if marker in lower_query:
-                dest_part = lower_query.split(marker, 1)[-1].strip()
-                destination = dest_part.split("$")[0].strip().title()
+    # Find destination after common prepositions
+    for prep in ["in ", "to ", "at ", "for "]:
+        if prep in query:
+            dest_part = query.split(prep)[1]
+            words = dest_part.split()
+            if words:
+                destination = words[0].capitalize()
                 break
-        
-        if "$" in lower_query:
-            try:
-                budget_str = lower_query.split("$")[-1]
-                budget = float(''.join(filter(str.isdigit, budget_str.split()[0])))
-            except: pass
 
-    print(f"[PARSE] Query: '{query}' -> Destination: {destination}, Budget: ${budget}")
+    # Find budget after $
+    if "$" in query:
+        try:
+            budget_str = query.split("$")[1].split()[0].replace(",", "")
+            budget = float(budget_str)
+        except:
+            budget = 400.0
+
     return {
         "user_query": query,
         "destination": destination,
