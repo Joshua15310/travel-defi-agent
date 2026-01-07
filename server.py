@@ -1,9 +1,11 @@
 import os
 import uuid
+import json
 from datetime import datetime, timezone
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from langserve import add_routes
+from sse_starlette.sse import EventSourceResponse # Required for streaming
 
 # Import 'workflow_app' from agent.py
 from agent import workflow_app as graph 
@@ -24,7 +26,7 @@ app.add_middleware(
     expose_headers=["*"],
 )
 
-# 2. Routes for the Agent
+# 2. Standard LangServe Routes
 add_routes(
     app,
     graph,
@@ -50,7 +52,7 @@ async def get_info():
 async def search_threads(request: Request):
     return []
 
-# 5. NEW FIX: Mock Thread Creation (This fixes the 404 error)
+# 5. Mock Thread Creation
 @app.post("/agent/threads")
 async def create_thread(request: Request):
     return {
@@ -63,7 +65,7 @@ async def create_thread(request: Request):
         "values": None
     }
 
-# 6. Mock Get Thread (Prevents potential future errors)
+# 6. Mock Get Thread
 @app.get("/agent/threads/{thread_id}")
 async def get_thread(thread_id: str):
     return {
@@ -74,6 +76,30 @@ async def get_thread(thread_id: str):
         "status": "idle",
         "values": None
     }
+
+# 7. CRITICAL FIX: Streaming Run Endpoint
+# This handles the exact URL that was 404-ing in your error log
+@app.post("/agent/threads/{thread_id}/runs/stream")
+async def stream_run(thread_id: str, request: Request):
+    # Get the user input from the Vercel app
+    body = await request.json()
+    input_data = body.get("input", {})
+    
+    # Configure the run with the thread_id
+    config = {"configurable": {"thread_id": thread_id}}
+
+    async def event_generator():
+        # Stream the output from your agent
+        async for event in graph.astream(input_data, config=config):
+            # Send the data as a Server-Sent Event (SSE)
+            yield {
+                "event": "data",
+                "data": json.dumps(event)
+            }
+        # Signal the end of the stream
+        yield {"event": "end"}
+
+    return EventSourceResponse(event_generator())
 
 if __name__ == "__main__":
     import uvicorn
