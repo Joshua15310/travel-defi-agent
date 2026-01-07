@@ -1,0 +1,6 @@
+{
+  "graphs": {
+    "agent": "./workflow/graph.py:graph"
+  },
+  "env": ".env"
+}
