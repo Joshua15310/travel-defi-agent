@@ -1,9 +1,9 @@
-# agent.py - Crypto Travel Booker (Schema Fix)
+# agent.py - Crypto Travel Booker (Vercel Compatibility Fix)
 import os
 import requests
 from dotenv import load_dotenv
 from datetime import date, timedelta
-from typing import TypedDict, List
+from typing import TypedDict, List, Union
 
 # LangChain / LangGraph Imports
 from langchain_core.messages import HumanMessage, BaseMessage
@@ -16,16 +16,14 @@ load_dotenv()
 
 BOOKING_KEY = os.getenv("BOOKING_API_KEY")
 
-# --- STATE DEFINITION FIX ---
-# Removed Optional[] wrappers to fix the "Unknown type: null" error in Playground
 class AgentState(TypedDict, total=False):
     messages: List[BaseMessage]
     user_query: str
     destination: str
     budget_usd: float
     hotels: List[dict]
-    hotel_name: str        # Changed from Optional[str] -> str
-    hotel_price: float     # Changed from Optional[float] -> float
+    hotel_name: str
+    hotel_price: float
     needs_swap: bool
     swap_amount: float
     final_status: str
@@ -38,14 +36,30 @@ def parse_intent(state: AgentState):
     messages = state.get("messages", [])
     text = ""
     
+    # Loop through messages in reverse to find the latest human input
     for m in reversed(messages):
+        # 1. Extract raw content
         if hasattr(m, 'content'):
             content = m.content
         elif isinstance(m, dict) and 'content' in m:
             content = m['content']
         else:
             content = ""
-        if content and content.strip():
+            
+        # 2. CRITICAL FIX: Handle Vercel's "List" content format
+        if isinstance(content, list):
+            # Vercel sends content as a list of dicts (e.g. [{"type": "text", "text": "..."}])
+            # We need to join the text parts back into a single string.
+            joined_text = ""
+            for part in content:
+                if isinstance(part, str):
+                    joined_text += part
+                elif isinstance(part, dict) and "text" in part:
+                    joined_text += part.get("text", "")
+            content = joined_text
+
+        # 3. Safe Strip: Ensure it is a string before checking
+        if content and isinstance(content, str) and content.strip():
             text = content.strip()
             break
             
@@ -157,7 +171,6 @@ def search_hotels(state: AgentState):
             {"name": f"Mock Hotel C in {city}", "price": 90.0}
         ]
         msg = f"Found hotels in {city}:\n1. {fallback[0]['name']} - ${fallback[0]['price']}\n2. {fallback[1]['name']} - ${fallback[1]['price']}\n3. {fallback[2]['name']} - ${fallback[2]['price']}\n\nReply with 1, 2, or 3 to book."
-        # Use empty string instead of None to satisfy type strictness
         return {
             "hotels": fallback,
             "hotel_name": "", 
@@ -198,7 +211,7 @@ def search_hotels(state: AgentState):
         
         return {
             "hotels": hotels,
-            "hotel_name": "", # Use empty string
+            "hotel_name": "",
             "messages": [HumanMessage(content=msg)]
         }
     except Exception as e:
@@ -219,7 +232,8 @@ def book_hotel(state):
     tx = result.get("tx_hash", "0xMOCK")
 
     tx_url = f"https://sepolia.etherscan.io/tx/{tx}"
-    msg = f"🎉 <b>Successfully booked!</b><br>Hotel: {hotel_name}<br>Price: ${hotel_price}<br><br>👉 <a href='{tx_url}' target='_blank' style='color: #007bff; text-decoration: none;'>View Transaction on Etherscan</a>"
+    # Standardizing output for better Markdown rendering in Vercel
+    msg = f"🎉 **Successfully booked!**\n\n* **Hotel:** {hotel_name}\n* **Price:** ${hotel_price}\n\n[View Transaction on Etherscan]({tx_url})"
 
     return {
         "final_status": "Booked",
