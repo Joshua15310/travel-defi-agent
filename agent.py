@@ -1,4 +1,4 @@
-# agent.py - Crypto Travel Booker (Vercel Compatibility Fix)
+# agent.py - Crypto Travel Booker (Vercel List Fix Applied)
 import os
 import requests
 from dotenv import load_dotenv
@@ -47,9 +47,8 @@ def parse_intent(state: AgentState):
             content = ""
             
         # 2. CRITICAL FIX: Handle Vercel's "List" content format
+        # This block prevents the "AttributeError: 'list' object has no attribute 'strip'"
         if isinstance(content, list):
-            # Vercel sends content as a list of dicts (e.g. [{"type": "text", "text": "..."}])
-            # We need to join the text parts back into a single string.
             joined_text = ""
             for part in content:
                 if isinstance(part, str):
