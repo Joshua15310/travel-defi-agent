@@ -2,7 +2,9 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from langserve import add_routes
-from workflow.graph import graph  # Import your actual graph object
+
+# --- THE FIX: Import 'workflow_app' from agent.py, not 'graph' from workflow ---
+from agent import workflow_app as graph 
 
 app = FastAPI(
     title="Nomad AI Travel Agent",
