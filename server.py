@@ -1,6 +1,7 @@
 import os
 import uuid
 import json
+import traceback
 from datetime import datetime, timezone
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,10 +17,10 @@ app = FastAPI(
     description="Warden Protocol Travel Agent",
 )
 
-# 1. Broaden CORS for Vercel
+# 1. CORS FIX: Allow Vercel specifically + wildcard fallback
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["https://agentchat.vercel.app", "http://localhost:3000", "*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -35,7 +36,6 @@ add_routes(
 
 # --- VERCEL COMPATIBILITY LAYER ---
 
-# 3. Info Endpoint
 @app.get("/agent/info")
 async def get_info():
     return {
@@ -47,12 +47,10 @@ async def get_info():
         }
     }
 
-# 4. Mock Search Endpoint
 @app.post("/agent/threads/search")
 async def search_threads(request: Request):
     return []
 
-# 5. Mock Thread Creation
 @app.post("/agent/threads")
 async def create_thread(request: Request):
     return {
@@ -65,7 +63,6 @@ async def create_thread(request: Request):
         "values": None
     }
 
-# 6. Mock Get Thread
 @app.get("/agent/threads/{thread_id}")
 async def get_thread(thread_id: str):
     return {
@@ -78,7 +75,6 @@ async def get_thread(thread_id: str):
     }
 
 # --- SERIALIZATION HELPER ---
-# This fixes the "Blank Response" by ensuring Messages are converted to JSON
 class CustomEncoder(json.JSONEncoder):
     def default(self, obj):
         if hasattr(obj, 'model_dump'):
@@ -87,25 +83,50 @@ class CustomEncoder(json.JSONEncoder):
             return obj.dict()
         if hasattr(obj, 'json'):
             return obj.json()
-        return super().default(obj)
+        try:
+            return super().default(obj)
+        except TypeError:
+            return str(obj) # Fallback to string if all else fails
 
-# 7. Streaming Run Endpoint (Updated with Encoder)
+# 7. Streaming Run Endpoint (WITH DEBUG LOGGING)
 @app.post("/agent/threads/{thread_id}/runs/stream")
 async def stream_run(thread_id: str, request: Request):
-    body = await request.json()
-    input_data = body.get("input", {})
-    config = {"configurable": {"thread_id": thread_id}}
+    try:
+        # DEBUG LOG: Confirm request received
+        print(f"--- [DEBUG] Stream Request Received for Thread: {thread_id} ---")
+        
+        body = await request.json()
+        print(f"--- [DEBUG] Request Body: {json.dumps(body)} ---")
+        
+        input_data = body.get("input", {})
+        config = {"configurable": {"thread_id": thread_id}}
 
-    async def event_generator():
-        async for event in graph.astream(input_data, config=config):
-            yield {
-                "event": "data",
-                # Use the CustomEncoder to handle HumanMessage objects
-                "data": json.dumps(event, cls=CustomEncoder)
-            }
-        yield {"event": "end"}
+        async def event_generator():
+            try:
+                print("--- [DEBUG] Starting LangGraph Stream ---")
+                async for event in graph.astream(input_data, config=config):
+                    print(f"--- [DEBUG] Event Yielded: {type(event)} ---")
+                    yield {
+                        "event": "data",
+                        "data": json.dumps(event, cls=CustomEncoder)
+                    }
+                print("--- [DEBUG] Stream Finished ---")
+                yield {"event": "end"}
+            except Exception as e:
+                print(f"--- [ERROR] Stream Crashed: {e} ---")
+                traceback.print_exc()
+                # Send error to UI so it's not blank
+                yield {
+                    "event": "data",
+                    "data": json.dumps({"error": str(e)})
+                }
+                yield {"event": "end"}
 
-    return EventSourceResponse(event_generator())
+        return EventSourceResponse(event_generator())
+    
+    except Exception as e:
+        print(f"--- [FATAL ERROR] Endpoint Failed: {e} ---")
+        return {"error": str(e)}
 
 # 8. Mock History Endpoint
 @app.post("/agent/threads/{thread_id}/history")
