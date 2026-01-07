@@ -77,7 +77,19 @@ async def get_thread(thread_id: str):
         "values": None
     }
 
-# 7. Streaming Run Endpoint
+# --- SERIALIZATION HELPER ---
+# This fixes the "Blank Response" by ensuring Messages are converted to JSON
+class CustomEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if hasattr(obj, 'model_dump'):
+            return obj.model_dump()
+        if hasattr(obj, 'dict'):
+            return obj.dict()
+        if hasattr(obj, 'json'):
+            return obj.json()
+        return super().default(obj)
+
+# 7. Streaming Run Endpoint (Updated with Encoder)
 @app.post("/agent/threads/{thread_id}/runs/stream")
 async def stream_run(thread_id: str, request: Request):
     body = await request.json()
@@ -88,14 +100,14 @@ async def stream_run(thread_id: str, request: Request):
         async for event in graph.astream(input_data, config=config):
             yield {
                 "event": "data",
-                "data": json.dumps(event)
+                # Use the CustomEncoder to handle HumanMessage objects
+                "data": json.dumps(event, cls=CustomEncoder)
             }
         yield {"event": "end"}
 
     return EventSourceResponse(event_generator())
 
-# 8. CORRECTED: Mock History Endpoint
-# Changed return value from {"messages": []} to just []
+# 8. Mock History Endpoint
 @app.post("/agent/threads/{thread_id}/history")
 async def post_thread_history(thread_id: str, request: Request):
     return []
