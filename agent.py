@@ -1,4 +1,4 @@
-# agent.py - Fixed: Uses AIMessage for replies so Vercel can see them
+# agent.py - FIXED: Uses AIMessage so Vercel displays the text
 import os
 import requests
 from dotenv import load_dotenv
@@ -46,7 +46,7 @@ def parse_intent(state: AgentState):
         else:
             content = ""
             
-        # 2. CRITICAL FIX: Handle Vercel's "List" content format
+        # Handle Vercel's "List" content format
         if isinstance(content, list):
             joined_text = ""
             for part in content:
@@ -56,7 +56,7 @@ def parse_intent(state: AgentState):
                     joined_text += part.get("text", "")
             content = joined_text
 
-        # 3. Safe Strip: Ensure it is a string before checking
+        # Safe Strip
         if content and isinstance(content, str) and content.strip():
             text = content.strip()
             break
@@ -148,11 +148,11 @@ def search_hotels(state: AgentState):
                 return {
                     "hotel_name": selected["name"],
                     "hotel_price": selected["price"],
-                    # 2. FIX: Use AIMessage here
+                    # 2. FIX: Use AIMessage
                     "messages": [AIMessage(content=msg)]
                 }
             else:
-                 # 3. FIX: Use AIMessage here
+                 # 3. FIX: Use AIMessage
                  return {"messages": [AIMessage(content="⚠️ Invalid number. Please choose 1-5.")]}
         except Exception:
             pass
@@ -162,7 +162,7 @@ def search_hotels(state: AgentState):
     budget = state.get("budget_usd", 400.0)
     
     if city == "Unknown":
-        # 4. FIX: Use AIMessage here
+        # 4. FIX: Use AIMessage
         return {"messages": [AIMessage(content="Where would you like to go?")]}
 
     if not BOOKING_KEY:
@@ -175,7 +175,7 @@ def search_hotels(state: AgentState):
         return {
             "hotels": fallback,
             "hotel_name": "", 
-            # 5. FIX: Use AIMessage here
+            # 5. FIX: Use AIMessage
             "messages": [AIMessage(content=msg)]
         }
     
@@ -206,7 +206,7 @@ def search_hotels(state: AgentState):
             if 0 < price <= budget: hotels.append({"name": name, "price": price})
 
         if not hotels:
-            # 6. FIX: Use AIMessage here
+            # 6. FIX: Use AIMessage
             return {"hotels": [], "messages": [AIMessage(content=f"No hotels found in {city} under ${budget}.")]}
 
         options = [f"{i+1}. {h['name']} - ${h['price']}" for i, h in enumerate(hotels)]
@@ -215,10 +215,11 @@ def search_hotels(state: AgentState):
         return {
             "hotels": hotels,
             "hotel_name": "",
-            # 7. FIX: Use AIMessage here
+            # 7. FIX: Use AIMessage
             "messages": [AIMessage(content=msg)]
         }
     except Exception as e:
+        # 8. FIX: Use AIMessage
         return {"messages": [AIMessage(content=f"Search failed: {e}")]}
 
 def check_swap(state):
@@ -242,7 +243,7 @@ def book_hotel(state):
     return {
         "final_status": "Booked",
         "tx_hash": tx,
-        # 8. FIX: Use AIMessage here
+        # 9. FIX: Use AIMessage
         "messages": [AIMessage(content=msg)]
     }
 
