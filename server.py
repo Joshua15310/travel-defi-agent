@@ -1,9 +1,9 @@
 import os
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from langserve import add_routes
 
-# --- THE FIX: Import 'workflow_app' from agent.py, not 'graph' from workflow ---
+# Import 'workflow_app' from agent.py (The "Factory")
 from agent import workflow_app as graph 
 
 app = FastAPI(
@@ -12,7 +12,7 @@ app = FastAPI(
     description="Warden Protocol Travel Agent",
 )
 
-# CRITICAL: Broaden CORS for Vercel
+# 1. Broaden CORS for Vercel
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -22,14 +22,14 @@ app.add_middleware(
     expose_headers=["*"],
 )
 
-# This is what your index.html uses
+# 2. Routes for the Agent
 add_routes(
     app,
     graph,
     path="/agent",
 )
 
-# ADD THIS: A manual /info endpoint to stop the Vercel 404
+# 3. FIX FOR VERCEL: Info Endpoint (Discovery)
 @app.get("/agent/info")
 async def get_info():
     return {
@@ -40,6 +40,14 @@ async def get_info():
             }
         }
     }
+
+# 4. NEW FIX: Mock Search Endpoint (History)
+# This stops the "404 /threads/search" error in the Vercel console
+@app.post("/agent/threads/search")
+async def search_threads(request: Request):
+    # We return an empty list to tell Vercel "No past history found"
+    # This allows the UI to load without crashing.
+    return []
 
 if __name__ == "__main__":
     import uvicorn
