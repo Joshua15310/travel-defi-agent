@@ -35,7 +35,7 @@ add_routes(
 
 # --- VERCEL COMPATIBILITY LAYER ---
 
-# 3. Info Endpoint (Discovery)
+# 3. Info Endpoint
 @app.get("/agent/info")
 async def get_info():
     return {
@@ -77,7 +77,7 @@ async def get_thread(thread_id: str):
         "values": None
     }
 
-# 7. Streaming Run Endpoint (Previous Fix)
+# 7. Streaming Run Endpoint
 @app.post("/agent/threads/{thread_id}/runs/stream")
 async def stream_run(thread_id: str, request: Request):
     body = await request.json()
@@ -94,11 +94,11 @@ async def stream_run(thread_id: str, request: Request):
 
     return EventSourceResponse(event_generator())
 
-# 8. NEW FIX: Mock History Endpoint (Fixes the current 404)
+# 8. CORRECTED: Mock History Endpoint
+# Changed return value from {"messages": []} to just []
 @app.post("/agent/threads/{thread_id}/history")
 async def post_thread_history(thread_id: str, request: Request):
-    # We return an empty list of messages to tell Vercel "Sync complete, no old history"
-    return {"messages": []}
+    return []
 
 if __name__ == "__main__":
     import uvicorn
