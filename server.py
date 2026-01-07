@@ -17,7 +17,7 @@ app = FastAPI(
     description="Warden Protocol Travel Agent",
 )
 
-# 1. CORS FIX: Allow Vercel specifically + wildcard fallback
+# 1. Broaden CORS for Vercel
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["https://agentchat.vercel.app", "http://localhost:3000", "*"],
@@ -86,38 +86,30 @@ class CustomEncoder(json.JSONEncoder):
         try:
             return super().default(obj)
         except TypeError:
-            return str(obj) # Fallback to string if all else fails
+            return str(obj)
 
-# 7. Streaming Run Endpoint (WITH DEBUG LOGGING)
+# 7. Streaming Run Endpoint (FIXED FOR VERCEL PROTOCOL)
 @app.post("/agent/threads/{thread_id}/runs/stream")
 async def stream_run(thread_id: str, request: Request):
     try:
-        # DEBUG LOG: Confirm request received
-        print(f"--- [DEBUG] Stream Request Received for Thread: {thread_id} ---")
-        
         body = await request.json()
-        print(f"--- [DEBUG] Request Body: {json.dumps(body)} ---")
-        
         input_data = body.get("input", {})
         config = {"configurable": {"thread_id": thread_id}}
 
         async def event_generator():
             try:
-                print("--- [DEBUG] Starting LangGraph Stream ---")
-                async for event in graph.astream(input_data, config=config):
-                    print(f"--- [DEBUG] Event Yielded: {type(event)} ---")
+                # CRITICAL FIX: We must use stream_mode="values" 
+                # This ensures Vercel gets the full state (messages list), not just a node update.
+                async for event in graph.astream(input_data, config=config, stream_mode="values"):
                     yield {
-                        "event": "data",
+                        "event": "values", # The Vercel app specifically listens for this event type
                         "data": json.dumps(event, cls=CustomEncoder)
                     }
-                print("--- [DEBUG] Stream Finished ---")
                 yield {"event": "end"}
             except Exception as e:
-                print(f"--- [ERROR] Stream Crashed: {e} ---")
-                traceback.print_exc()
-                # Send error to UI so it's not blank
+                print(f"Stream error: {e}")
                 yield {
-                    "event": "data",
+                    "event": "error",
                     "data": json.dumps({"error": str(e)})
                 }
                 yield {"event": "end"}
@@ -125,7 +117,6 @@ async def stream_run(thread_id: str, request: Request):
         return EventSourceResponse(event_generator())
     
     except Exception as e:
-        print(f"--- [FATAL ERROR] Endpoint Failed: {e} ---")
         return {"error": str(e)}
 
 # 8. Mock History Endpoint
