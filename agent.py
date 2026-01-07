@@ -1,11 +1,11 @@
-# agent.py - Fixed Message Types (Human vs AI)
+# agent.py - Fixed: Uses AIMessage for replies so Vercel can see them
 import os
 import requests
 from dotenv import load_dotenv
 from datetime import date, timedelta
 from typing import TypedDict, List, Union
 
-# 1. IMPORT AIMessage
+# 1. FIX: Import AIMessage
 from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
@@ -36,7 +36,9 @@ def parse_intent(state: AgentState):
     messages = state.get("messages", [])
     text = ""
     
+    # Loop through messages in reverse to find the latest human input
     for m in reversed(messages):
+        # 1. Extract raw content
         if hasattr(m, 'content'):
             content = m.content
         elif isinstance(m, dict) and 'content' in m:
@@ -44,7 +46,7 @@ def parse_intent(state: AgentState):
         else:
             content = ""
             
-        # Handle Vercel's List format
+        # 2. CRITICAL FIX: Handle Vercel's "List" content format
         if isinstance(content, list):
             joined_text = ""
             for part in content:
@@ -54,6 +56,7 @@ def parse_intent(state: AgentState):
                     joined_text += part.get("text", "")
             content = joined_text
 
+        # 3. Safe Strip: Ensure it is a string before checking
         if content and isinstance(content, str) and content.strip():
             text = content.strip()
             break
@@ -145,10 +148,12 @@ def search_hotels(state: AgentState):
                 return {
                     "hotel_name": selected["name"],
                     "hotel_price": selected["price"],
-                    "messages": [AIMessage(content=msg)] # FIX: Use AIMessage
+                    # 2. FIX: Use AIMessage here
+                    "messages": [AIMessage(content=msg)]
                 }
             else:
-                 return {"messages": [AIMessage(content="⚠️ Invalid number. Please choose 1-5.")]} # FIX: Use AIMessage
+                 # 3. FIX: Use AIMessage here
+                 return {"messages": [AIMessage(content="⚠️ Invalid number. Please choose 1-5.")]}
         except Exception:
             pass
 
@@ -157,7 +162,8 @@ def search_hotels(state: AgentState):
     budget = state.get("budget_usd", 400.0)
     
     if city == "Unknown":
-        return {"messages": [AIMessage(content="Where would you like to go?")]} # FIX: Use AIMessage
+        # 4. FIX: Use AIMessage here
+        return {"messages": [AIMessage(content="Where would you like to go?")]}
 
     if not BOOKING_KEY:
         fallback = [
@@ -169,7 +175,8 @@ def search_hotels(state: AgentState):
         return {
             "hotels": fallback,
             "hotel_name": "", 
-            "messages": [AIMessage(content=msg)] # FIX: Use AIMessage
+            # 5. FIX: Use AIMessage here
+            "messages": [AIMessage(content=msg)]
         }
     
     dest_id, dest_type = get_destination_data(city)
@@ -199,7 +206,8 @@ def search_hotels(state: AgentState):
             if 0 < price <= budget: hotels.append({"name": name, "price": price})
 
         if not hotels:
-            return {"hotels": [], "messages": [AIMessage(content=f"No hotels found in {city} under ${budget}.")]} # FIX
+            # 6. FIX: Use AIMessage here
+            return {"hotels": [], "messages": [AIMessage(content=f"No hotels found in {city} under ${budget}.")]}
 
         options = [f"{i+1}. {h['name']} - ${h['price']}" for i, h in enumerate(hotels)]
         msg = f"Found {len(hotels)} hotels in {city} under ${budget}:\n\n" + "\n".join(options) + "\n\nReply with the number (e.g., '1') to book."
@@ -207,10 +215,11 @@ def search_hotels(state: AgentState):
         return {
             "hotels": hotels,
             "hotel_name": "",
-            "messages": [AIMessage(content=msg)] # FIX: Use AIMessage
+            # 7. FIX: Use AIMessage here
+            "messages": [AIMessage(content=msg)]
         }
     except Exception as e:
-        return {"messages": [AIMessage(content=f"Search failed: {e}")]} # FIX
+        return {"messages": [AIMessage(content=f"Search failed: {e}")]}
 
 def check_swap(state):
     return {"needs_swap": False}
@@ -227,12 +236,14 @@ def book_hotel(state):
     tx = result.get("tx_hash", "0xMOCK")
 
     tx_url = f"https://sepolia.etherscan.io/tx/{tx}"
+    # Standardizing output for better Markdown rendering in Vercel
     msg = f"🎉 **Successfully booked!**\n\n* **Hotel:** {hotel_name}\n* **Price:** ${hotel_price}\n\n[View Transaction on Etherscan]({tx_url})"
 
     return {
         "final_status": "Booked",
         "tx_hash": tx,
-        "messages": [AIMessage(content=msg)] # FIX: Use AIMessage
+        # 8. FIX: Use AIMessage here
+        "messages": [AIMessage(content=msg)]
     }
 
 # --- Graph Construction ---
