@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from langserve import add_routes
-from sse_starlette.sse import EventSourceResponse # Required for streaming
+from sse_starlette.sse import EventSourceResponse
 
 # Import 'workflow_app' from agent.py
 from agent import workflow_app as graph 
@@ -47,7 +47,7 @@ async def get_info():
         }
     }
 
-# 4. Mock Search Endpoint (History)
+# 4. Mock Search Endpoint
 @app.post("/agent/threads/search")
 async def search_threads(request: Request):
     return []
@@ -77,29 +77,28 @@ async def get_thread(thread_id: str):
         "values": None
     }
 
-# 7. CRITICAL FIX: Streaming Run Endpoint
-# This handles the exact URL that was 404-ing in your error log
+# 7. Streaming Run Endpoint (Previous Fix)
 @app.post("/agent/threads/{thread_id}/runs/stream")
 async def stream_run(thread_id: str, request: Request):
-    # Get the user input from the Vercel app
     body = await request.json()
     input_data = body.get("input", {})
-    
-    # Configure the run with the thread_id
     config = {"configurable": {"thread_id": thread_id}}
 
     async def event_generator():
-        # Stream the output from your agent
         async for event in graph.astream(input_data, config=config):
-            # Send the data as a Server-Sent Event (SSE)
             yield {
                 "event": "data",
                 "data": json.dumps(event)
             }
-        # Signal the end of the stream
         yield {"event": "end"}
 
     return EventSourceResponse(event_generator())
+
+# 8. NEW FIX: Mock History Endpoint (Fixes the current 404)
+@app.post("/agent/threads/{thread_id}/history")
+async def post_thread_history(thread_id: str, request: Request):
+    # We return an empty list of messages to tell Vercel "Sync complete, no old history"
+    return {"messages": []}
 
 if __name__ == "__main__":
     import uvicorn
