@@ -8,3 +8,4 @@ langchain_openai
 fastapi
 uvicorn
 langserve[all]
+sib_api_v3_sdk
