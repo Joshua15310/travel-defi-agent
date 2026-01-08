@@ -2,10 +2,10 @@
 import os
 import requests
 import random
+import operator
 from dotenv import load_dotenv
 from datetime import date, timedelta, datetime
 from typing import TypedDict, List, Union, Optional, Annotated
-import operator
 
 from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
 from langgraph.graph import StateGraph, END
@@ -18,8 +18,8 @@ load_dotenv()
 BOOKING_KEY = os.getenv("BOOKING_API_KEY")
 
 # --- 1. Enhanced State Management ---
-# Use operator.add to ensure messages are appended, not overwritten
 class AgentState(TypedDict, total=False):
+    # Use operator.add to append new messages to history instead of overwriting
     messages: Annotated[List[BaseMessage], operator.add]
     user_query: str
     
@@ -32,143 +32,164 @@ class AgentState(TypedDict, total=False):
     
     # Search & Selection
     budget_usd: float
-    hotels: List[dict]          # The live list from API
-    selected_hotel: dict        # The specific hotel user picked
-    room_options: List[dict]    # The calculated room tiers (Standard/Deluxe)
-    final_room_type: str        # The chosen room
+    hotels: List[dict]
+    selected_hotel: dict
+    room_options: List[dict]
+    final_room_type: str
     final_price: float
     
     # Transaction
     needs_swap: bool
     tx_hash: str
     confirmation_number: str
+    final_status: str
 
-# --- 2. Helper: Date Parser ---
+# --- 2. Helpers ---
+
 def parse_date(text: str) -> str:
     try:
         return datetime.strptime(text.strip(), "%Y-%m-%d").strftime("%Y-%m-%d")
     except:
+        # Fallback logic for demo purposes
         if "jan" in text.lower(): return "2026-01-20"
         if "feb" in text.lower(): return "2026-02-10"
-        return (date.today() + timedelta(days=1)).strftime("%Y-%m-%d") # Default tomorrow
+        return (date.today() + timedelta(days=1)).strftime("%Y-%m-%d")
 
-# --- 3. Node: Intent Parser & Router (ROBUST VERSION) ---
+def extract_text(content) -> str:
+    """
+    Recursively extracts text from complex Vercel message formats.
+    Handles: String, List of Dicts, or Dict.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        # Join all text parts found in the list
+        return " ".join([extract_text(item) for item in content])
+    if isinstance(content, dict):
+        # Extract 'text' key if present
+        return content.get("text", str(content))
+    return str(content)
+
+# --- 3. Node: Intent Parser ---
 def parse_intent(state: AgentState):
-    """
-    Determines what the user is answering based on previous context.
-    """
     print(f"[DEBUG] Current State Keys: {list(state.keys())}")
     
     messages = state.get("messages", [])
     if not messages: 
-        print("[DEBUG] No messages found.")
         return {}
     
-    last_user_msg = ""
-    last_ai_msg = ""
+    last_user_text = ""
+    last_ai_text = ""
     
-    # Robust Message Extraction (Handles objects AND dicts)
-    # 1. Find last user message
+    # 1. Extract Last User Message (safely)
     for m in reversed(messages):
-        msg_type = getattr(m, 'type', '') or m.get('type', '')
-        if msg_type == 'human' or isinstance(m, HumanMessage):
-            last_user_msg = getattr(m, 'content', '') or m.get('content', '')
+        # Check both object attributes and dict keys for compatibility
+        m_type = getattr(m, 'type', None) or (m.get('type') if isinstance(m, dict) else None)
+        if m_type == 'human' or isinstance(m, HumanMessage):
+            raw_content = getattr(m, 'content', None) or (m.get('content') if isinstance(m, dict) else "")
+            last_user_text = extract_text(raw_content).strip()
             break
             
-    # 2. Find last AI message
+    # 2. Extract Last AI Message (safely)
     for m in reversed(messages):
-        msg_type = getattr(m, 'type', '') or m.get('type', '')
-        if msg_type == 'ai' or isinstance(m, AIMessage):
-            last_ai_msg = getattr(m, 'content', '') or m.get('content', '')
+        m_type = getattr(m, 'type', None) or (m.get('type') if isinstance(m, dict) else None)
+        if m_type == 'ai' or isinstance(m, AIMessage):
+            raw_content = getattr(m, 'content', None) or (m.get('content') if isinstance(m, dict) else "")
+            last_ai_text = extract_text(raw_content).strip()
             break
 
-    print(f"[DEBUG] Last User Input: '{last_user_msg}'")
-    print(f"[DEBUG] Last AI Context: '{last_ai_msg[:30]}...'")
-
-    updates = {}
-    text = last_user_msg.lower().strip()
+    print(f"[DEBUG] Parsed User Input: '{last_user_text}'")
     
+    updates = {}
+    text = last_user_text
+    lowered_text = text.lower()
+    lowered_ai = last_ai_text.lower()
+
     if not text: return {}
 
-    # --- CRITICAL LOGIC: Destination Capture ---
-    # Case A: Explicit "in Lagos" or "to Abuja"
-    for token in [" in ", " to ", " at "]:
-        if token in text:
-            try:
-                updates["destination"] = text.split(token)[1].strip("?.").title()
-                print(f"[DEBUG] Extracted Destination (Explicit): {updates['destination']}")
-                break
-            except: pass
-
-    # Case B: Blind Capture (First turn or missing destination)
-    # If we still don't have a destination, and the input isn't a command/greeting
-    if not state.get("destination") and not updates.get("destination"):
-        if text not in ["hi", "hello", "hey", "start", "restart", "menu", "reset"]:
-            updates["destination"] = last_user_msg.title()
-            print(f"[DEBUG] Extracted Destination (Blind): {updates['destination']}")
-
-    # --- Context-Aware Extraction ---
+    # --- DESTINATION CAPTURE LOGIC ---
     
-    # Check-in Date
-    if "check-in" in last_ai_msg.lower():
-        updates["check_in"] = parse_date(last_user_msg)
-        updates["check_out"] = (datetime.strptime(updates["check_in"], "%Y-%m-%d") + timedelta(days=2)).strftime("%Y-%m-%d")
-        print(f"[DEBUG] Extracted Date: {updates['check_in']}")
+    # 1. Check if we already have a destination
+    if not state.get("destination"):
+        # Strategy A: Look for keywords like "in London"
+        found_marker = False
+        for token in [" in ", " to ", " at "]:
+            if token in lowered_text:
+                try:
+                    candidate = text.split(token, 1)[1].strip("?.").title()
+                    if len(candidate) > 2:
+                        updates["destination"] = candidate
+                        found_marker = True
+                        break
+                except: pass
+        
+        # Strategy B: Blind Capture (Assumption)
+        # If no keywords found, and input is not a greeting, assume it is the city.
+        if not found_marker and lowered_text not in ["hi", "hello", "hey", "start", "restart", "menu"]:
+            updates["destination"] = text.title()
+            print(f"[DEBUG] Blind captured destination: {updates['destination']}")
 
-    # Guests/Rooms
-    elif "how many guests" in last_ai_msg.lower():
-        nums = [int(s) for s in last_user_msg.split() if s.isdigit()]
+    # --- INTERVIEW LOGIC (Dates & Guests) ---
+    
+    # Are we answering the date question?
+    if "check-in" in lowered_ai:
+        updates["check_in"] = parse_date(text)
+        updates["check_out"] = (datetime.strptime(updates["check_in"], "%Y-%m-%d") + timedelta(days=2)).strftime("%Y-%m-%d")
+    
+    # Are we answering the guest question?
+    elif "how many guests" in lowered_ai:
+        nums = [int(s) for s in text.split() if s.isdigit()]
         if nums:
             updates["guests"] = nums[0]
             updates["rooms"] = nums[1] if len(nums) > 1 else 1
-            print(f"[DEBUG] Extracted Guests: {updates['guests']}")
 
-    # Hotel Selection
+    # --- HOTEL SELECTION LOGIC ---
+    
+    # Selecting a hotel number (1-5)
     elif state.get("hotels") and not state.get("selected_hotel"):
         if text.isdigit():
             idx = int(text) - 1
             if 0 <= idx < len(state["hotels"]):
                 updates["selected_hotel"] = state["hotels"][idx]
-                print(f"[DEBUG] Selected Hotel: {updates['selected_hotel']['name']}")
     
-    # Room Selection
+    # Selecting a room type (1-3)
     elif state.get("selected_hotel") and not state.get("final_room_type"):
         options = state.get("room_options", [])
         if text.isdigit() and 0 <= int(text)-1 < len(options):
             chosen = options[int(text)-1]
             updates["final_room_type"] = chosen["type"]
             updates["final_price"] = chosen["price"]
-            print(f"[DEBUG] Selected Room: {updates['final_room_type']}")
-        elif "deluxe" in text:
-            # Fallback for text selection
-            updates["final_room_type"] = options[1]["type"]
-            updates["final_price"] = options[1]["price"]
+        elif "deluxe" in lowered_text:
+            # Simple keyword matching fallback
+            match = next((r for r in options if "Deluxe" in r["type"]), options[0])
+            updates["final_room_type"] = match["type"]
+            updates["final_price"] = match["price"]
         else:
-            # Default to first option
-            updates["final_room_type"] = options[0]["type"]
-            updates["final_price"] = options[0]["price"]
+            # Default to first option if input is unclear but flow continues
+            if options:
+                updates["final_room_type"] = options[0]["type"]
+                updates["final_price"] = options[0]["price"]
 
-    updates["user_query"] = last_user_msg
+    updates["user_query"] = text
     return updates
 
-# --- 4. Node: Gather Requirements (The Interview) ---
+# --- 4. Node: Gather Requirements ---
 def gather_requirements(state: AgentState):
+    """Asks for missing information based on current state."""
     print("[DEBUG] Node: Gather Requirements")
-    # 1. Check Destination
+    
     if not state.get("destination") or state.get("destination") == "Unknown":
         return {"messages": [AIMessage(content="👋 Welcome to Warden Travel! To find you the best hotels, which **City** or **Country** are you visiting?")]}
     
-    # 2. Check Dates
     if not state.get("check_in"):
         return {"messages": [AIMessage(content=f"Great, **{state['destination']}** is beautiful! 📅 When would you like to **Check-in**? (YYYY-MM-DD)")]}
     
-    # 3. Check Guests/Rooms
     if not state.get("guests"):
-        return {"messages": [AIMessage(content="Got the dates. 👥 **How many guests** are travelling, and how many **rooms** do you need? (e.g. '2 guests 1 room')")]}
+        return {"messages": [AIMessage(content="Got the dates. 👥 **How many guests** and how many **rooms** do you need? (e.g. '2 guests 1 room')")]}
     
     return {}
 
-# --- 5. Node: Search Hotels (Live API) ---
+# --- 5. Node: Search Hotels ---
 def get_destination_data(city):
     if not BOOKING_KEY: return None, None
     try:
@@ -197,14 +218,13 @@ def search_hotels(state: AgentState):
     if not dest_id: 
         return {"messages": [AIMessage(content=f"⚠️ Could not find location '{city}'. Please try a major city name.")]}
 
-    # API Call
     url = "https://booking-com.p.rapidapi.com/v1/hotels/search"
     headers = {"X-RapidAPI-Key": BOOKING_KEY, "X-RapidAPI-Host": "booking-com.p.rapidapi.com"}
     params = {
         "dest_id": str(dest_id), "dest_type": dest_type,
         "checkin_date": checkin, "checkout_date": checkout,
         "adults_number": str(guests), "room_number": str(state.get("rooms", 1)),
-        "units": "metric", "filter_by_currency": "USD", "order_by": "price"
+        "units": "metric", "filter_by_currency": "USD", "order_by": "popularity"
     }
 
     try:
@@ -212,24 +232,20 @@ def search_hotels(state: AgentState):
         data = response.json()
         hotels = []
         
-        # Parse Results
         for h in data.get("result", [])[:5]:
             name = h.get("hotel_name", "Unknown")
             try: price = float(h.get("composite_price_breakdown", {}).get("gross_amount", {}).get("value", 0))
             except: price = 0.0
             if price == 0: price = float(h.get("min_total_price", 150))
             
-            rating = "⭐" * int(round(h.get("review_score", 0)/2)) 
-            if not rating: rating = "⭐⭐⭐"
-            
-            hotels.append({"name": name, "price": price, "rating": rating})
+            hotels.append({"name": name, "price": price})
 
         if not hotels:
             return {"messages": [AIMessage(content=f"No hotels found in {city} for these dates.")]}
 
         options_text = ""
         for i, h in enumerate(hotels):
-            options_text += f"{i+1}. **{h['name']}** — ${h['price']:.2f} {h['rating']}\n"
+            options_text += f"{i+1}. **{h['name']}** — ${h['price']:.2f}\n"
             
         final_msg = f"{msg_start}\n\nI found {len(hotels)} great options:\n\n{options_text}\nReply with the **number** of the hotel you want to book."
         
@@ -273,9 +289,9 @@ def book_hotel(state: AgentState):
     
     hotel_name = state["selected_hotel"]["name"]
     price = state["final_price"]
-    
     hcn = f"#{random.randint(10000, 99999)}BR"
     
+    # Integrate Warden
     result = warden_client.submit_booking(hotel_name, price, state["destination"], 0.0)
     tx = result.get("tx_hash", "0xMOCK_TX_HASH")
     tx_url = f"https://sepolia.basescan.org/tx/{tx}" 
@@ -299,9 +315,8 @@ def book_hotel(state: AgentState):
         "messages": [AIMessage(content=msg)]
     }
 
-# --- Graph Construction ---
+# --- Graph Routing Logic ---
 def route_step(state):
-    # Logic to decide "What to do next?"
     print(f"[DEBUG] Routing... Dest:{state.get('destination')} CheckIn:{state.get('check_in')}")
     
     if not state.get("destination") or not state.get("check_in") or not state.get("guests"):
@@ -309,16 +324,17 @@ def route_step(state):
     if not state.get("hotels"):
         return "search"
     if not state.get("selected_hotel"):
-        return "wait_for_selection" 
+        return "wait_for_selection" # Loop END to wait for user input
     if not state.get("final_room_type"):
         if not state.get("room_options"):
             return "select_room"
         else:
-            return "wait_for_room" 
+            return "wait_for_room" # Loop END to wait for user input
     if state.get("final_status") != "Booked":
         return "book"
     return END
 
+# --- Graph Construction ---
 workflow = StateGraph(AgentState)
 
 workflow.add_node("parse", parse_intent)
