@@ -4,7 +4,7 @@ from sib_api_v3_sdk.rest import ApiException
 
 # 1. Setup Configuration
 configuration = sib_api_v3_sdk.Configuration()
-configuration.api_key['api-key'] = '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' # Paste your key here
+configuration.api_key['api-key'] = 'jjk' # Paste your key here
 
 # 2. Create an instance of the API class
 api_instance = sib_api_v3_sdk.TransactionalEmailsApi(sib_api_v3_sdk.ApiClient(configuration))
