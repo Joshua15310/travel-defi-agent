@@ -273,7 +273,7 @@ def gather_requirements(state: AgentState):
         return {"messages": [AIMessage(content=f"{intro}👥 How many guests and how many rooms do you need?{hint}\n\nExamples:\n- 2 guests 1 room\n- 3 guests 3 rooms\n- 1 guests 1 rooms")]}
     
     if state.get("budget_max") is None:
-        return {"messages": [AIMessage(content=f"💰 What is your budget per night?{hint}\n\nExamples:\n- My budget is between \$400 and $500\n- My budget is between $400 to $500\n- My budget is under $300\n- My budget is above $300\n- no limit")]}
+        return {"messages": [AIMessage(content=f"💰 What is your budget per night?{hint}\n\nExamples:\n- My budget is between \$400 and $500\n- My budget is between \$400 to \$500\n- My budget is under $300\n- My budget is above $300\n- no limit")]}
     
     return {}
 
