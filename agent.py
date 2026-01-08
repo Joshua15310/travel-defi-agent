@@ -71,7 +71,7 @@ def extract_text(content) -> str:
     if isinstance(content, dict): return content.get("text", str(content))
     return str(content)
 
-# --- 3. Parsing Logic (Helpers) ---
+# --- 3. Parsing Logic ---
 
 def parse_budget(text: str):
     text = text.lower().replace("$", "").replace(",", "")
@@ -82,8 +82,6 @@ def parse_budget(text: str):
         return updates
     
     nums = re.findall(r'\d+', text)
-    # SAFETY CHECK: Only treat as budget if numbers are > 30 OR text explicitly says "budget/price"
-    # This prevents "2 guests" from being seen as "$2"
     is_likely_budget = "budget" in text or "price" in text or "cost" in text or any(float(n) > 30 for n in nums)
     
     if len(nums) >= 2 and is_likely_budget:
@@ -105,14 +103,13 @@ def parse_budget(text: str):
         
     if text.strip().isdigit():
         val = float(text)
-        # Only accept raw number as budget if > 30 (Assuming hotel price)
         if val > 30: 
             updates["budget_min"] = 0.0
             updates["budget_max"] = val
             return updates
     return {}
 
-# --- 4. Node: Intent Parser (Fixed Logic) ---
+# --- 4. Node: Intent Parser ---
 def parse_intent(state: AgentState):
     messages = state.get("messages", [])
     if not messages: return {}
@@ -140,7 +137,6 @@ def parse_intent(state: AgentState):
 
     if not text: return {}
 
-    # --- 1. COMMANDS (Reset) ---
     if "change" in lowered_text and ("date" in lowered_text or "day" in lowered_text):
         updates["check_in"] = ""
         updates["hotels"] = []
@@ -150,10 +146,8 @@ def parse_intent(state: AgentState):
         updates["hotels"] = []
         return updates
 
-    # --- 2. GUESTS (PRIORITY) ---
-    # Moved to top so "2 guests" isn't mistaken for "budget: 2"
+    # PRIORITY: GUESTS
     is_guest_answer = "guest" in lowered_text or "room" in lowered_text or "how many" in lowered_ai
-    
     if is_guest_answer:
         nums = [int(s) for s in text.split() if s.isdigit()]
         if nums:
@@ -162,14 +156,12 @@ def parse_intent(state: AgentState):
             updates["hotels"] = []
             return updates 
 
-    # --- 3. BUDGET ---
     budget_updates = parse_budget(text)
     if budget_updates:
         updates.update(budget_updates)
         updates["hotels"] = [] 
         return updates
 
-    # --- 4. DATES ---
     date_kws = ["jan", "feb", "mar", "apr", "tomorrow", "next", "monday", "tuesday", "wednesday", "thursday", "friday", "year", "week"]
     is_date_input = any(k in lowered_text for k in date_kws) or (any(char.isdigit() for char in text) and ("-" in text or "/" in text))
     if "check-in" in lowered_ai or is_date_input:
@@ -181,7 +173,6 @@ def parse_intent(state: AgentState):
             updates["date_just_set"] = True
             return updates
 
-    # --- 5. SELECTION ---
     if state.get("hotels") and text.isdigit():
         idx = int(text) - 1
         if not state.get("selected_hotel") and 0 <= idx < len(state["hotels"]):
@@ -194,7 +185,6 @@ def parse_intent(state: AgentState):
                 updates["final_price"] = options[idx]["price"]
                 return updates
 
-    # --- 6. DESTINATION ---
     new_dest = None
     if not state.get("destination") or " in " in lowered_text:
         for token in [" in ", " to ", " at ", "about "]:
@@ -217,7 +207,7 @@ def parse_intent(state: AgentState):
         updates["selected_hotel"] = {}
     return updates
 
-# --- 5. Node: Gather Requirements (Clean Lists) ---
+# --- 5. Node: Gather Requirements ---
 def gather_requirements(state: AgentState):
     if not state.get("destination"):
         return {"messages": [AIMessage(content="👋 Welcome to Warden Travel! Which City or Country are you visiting?")]}
@@ -230,7 +220,7 @@ def gather_requirements(state: AgentState):
         return {"messages": [AIMessage(content="💰 What is your budget per night?\n\nExamples:\n- My budget is between $400 and $500\n- My budget is between $400 to $500\n- My budget is under $300\n- My budget is above $300\n- no limit")]}
     return {}
 
-# --- 6. Node: Search Hotels ---
+# --- 6. Node: Search Hotels (With SMART FALLBACK) ---
 def get_destination_data(city):
     if not BOOKING_KEY: return None, None
     try:
@@ -245,25 +235,63 @@ def search_hotels(state: AgentState):
     if state.get("hotels"): return {}
     city, checkin, guests = state.get("destination"), state.get("check_in"), state.get("guests", 1)
     b_min, b_max = state.get("budget_min", 0), state.get("budget_max", 20000) 
+    
     dest_id, dest_type = get_destination_data(city)
     if not dest_id: return {"messages": [AIMessage(content=f"⚠️ Could not find location '{city}'.")]}
+    
     url = "https://booking-com.p.rapidapi.com/v1/hotels/search"
     params = {"dest_id": str(dest_id), "dest_type": dest_type, "checkin_date": checkin, "checkout_date": state["check_out"], "adults_number": str(guests), "units": "metric", "filter_by_currency": "USD", "order_by": "price"}
+    
     try:
         r = requests.get(url, headers={"X-RapidAPI-Key": BOOKING_KEY, "X-RapidAPI-Host": "booking-com.p.rapidapi.com"}, params=params, timeout=20)
-        raw_data = r.json().get("result", [])[:60]
-        hotels = []
+        # Increased to 100 to catch cheaper hotels further down the list
+        raw_data = r.json().get("result", [])[:100]
+        
+        all_parsed_hotels = []
+        filtered_hotels = []
+
         for h in raw_data:
             try: price = float(h.get("composite_price_breakdown", {}).get("gross_amount", {}).get("value", h.get("min_total_price", 150)))
             except: price = 150.0
+            
+            # Create Hotel Object
+            name = h.get("hotel_name", "Hotel")
+            score = h.get("review_score", 0) or 0
+            rating = "⭐" * int(round(score/2)) if score else "New"
+            hotel_obj = {"name": name, "price": price, "rating": rating}
+            
+            # Add to full list (for fallback)
+            all_parsed_hotels.append(hotel_obj)
+
+            # Strict Filter
             if b_min <= price <= b_max:
-                hotels.append({"name": h.get("hotel_name", "Hotel"), "price": price, "rating": "⭐" * int(round((h.get("review_score", 0) or 0)/2)) or "New"})
-                if len(hotels) >= 5: break 
-        if not hotels:
-            return {"messages": [AIMessage(content=f"😔 Found hotels in {city}, but none matching your budget. Try saying 'Change budget'.")]}
-        options_list = "\n".join([f"- {i+1}. {h['name']} - ${h['price']:.2f} {h['rating']}" for i, h in enumerate(hotels)])
-        msg = f"🔎 Found options in {city} for {checkin}:\n\n{options_list}\n\nReply with the number to book."
-        return {"hotels": hotels, "messages": [AIMessage(content=msg)]}
+                filtered_hotels.append(hotel_obj)
+                if len(filtered_hotels) >= 5: break 
+        
+        # --- LOGIC BRANCH ---
+        
+        # 1. Success Case
+        if filtered_hotels:
+            final_list = filtered_hotels
+            msg_intro = f"🔎 Found options in {city} for {checkin}:"
+
+        # 2. Fallback Case (Found hotels, but all too expensive)
+        elif all_parsed_hotels:
+            # Sort by price ascending to find the absolute cheapest
+            all_parsed_hotels.sort(key=lambda x: x["price"])
+            final_list = all_parsed_hotels[:5]
+            min_found = final_list[0]['price']
+            msg_intro = f"😔 I couldn't find anything strictly under **${b_max:.0f}**.\nThe cheapest option starts at **${min_found:.2f}**.\n\nHere are the lowest price options I found:"
+        
+        # 3. Total Failure Case
+        else:
+            return {"messages": [AIMessage(content=f"😔 No hotels found in {city} at all. Try changing the date or city.")]}
+
+        # Format output
+        options_list = "\n".join([f"- {i+1}. {h['name']} - ${h['price']:.2f} {h['rating']}" for i, h in enumerate(final_list)])
+        msg = f"{msg_intro}\n\n{options_list}\n\nReply with the number to book."
+        return {"hotels": final_list, "messages": [AIMessage(content=msg)]}
+
     except Exception as e: return {"messages": [AIMessage(content=f"Search Error: {str(e)}")]}
 
 def select_room(state: AgentState):
@@ -289,7 +317,6 @@ def route_step(state):
     if not state.get("check_in"): return "gather"
     if not state.get("guests") or state.get("guests") <= 0: return "gather"
     if state.get("budget_max") is None: return "gather"
-
     if not state.get("hotels") and not state.get("selected_hotel"): return "search"
     if not state.get("selected_hotel"): return END
     if not state.get("final_room_type"): return "select_room" if not state.get("room_options") else END
