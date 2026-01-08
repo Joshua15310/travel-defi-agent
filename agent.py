@@ -80,7 +80,6 @@ def parse_budget(text: str):
         updates["budget_max"] = 20000.0
         return updates
 
-    # Pattern: "100-200" or "100 to 200"
     range_match = re.search(r'(\d+)\s*-\s*(\d+)', text)
     if not range_match: range_match = re.search(r'(\d+)\s+to\s+(\d+)', text)
     
@@ -89,21 +88,18 @@ def parse_budget(text: str):
         updates["budget_max"] = float(range_match.group(2))
         return updates
 
-    # Pattern: "under 300"
     under_match = re.search(r'(?:under|below|less than)\s*(\d+)', text)
     if under_match:
         updates["budget_min"] = 0.0
         updates["budget_max"] = float(under_match.group(1))
         return updates
 
-    # Pattern: "above 300"
     over_match = re.search(r'(?:above|over|more than)\s*(\d+)', text)
     if over_match:
         updates["budget_min"] = float(over_match.group(1))
         updates["budget_max"] = 20000.0
         return updates
         
-    # Just a number
     if text.strip().isdigit():
         val = float(text)
         if val > 30: 
@@ -149,7 +145,7 @@ def parse_intent(state: AgentState):
         return updates
         
     if "change" in lowered_text and "budget" in lowered_text:
-        updates["budget_max"] = 0.0 # Force reset
+        updates["budget_max"] = 0.0
         updates["hotels"] = []
         return updates
 
@@ -158,14 +154,14 @@ def parse_intent(state: AgentState):
         updates["hotels"] = []
         return updates
 
-    # --- 2. BUDGET (High Priority) ---
+    # --- 2. BUDGET ---
     budget_updates = parse_budget(text)
     if budget_updates:
         updates.update(budget_updates)
         updates["hotels"] = [] 
         return updates
 
-    # --- 3. DATES (Strict) ---
+    # --- 3. DATES ---
     date_kws = ["jan", "feb", "mar", "apr", "tomorrow", "next", "monday", "tuesday", "wednesday", "thursday", "friday", "year", "week"]
     is_date_input = any(k in lowered_text for k in date_kws) or (any(char.isdigit() for char in text) and ("-" in text or "/" in text))
     
@@ -201,7 +197,7 @@ def parse_intent(state: AgentState):
                 updates["final_price"] = options[idx]["price"]
                 return updates
 
-    # --- 6. DESTINATION (Last Resort) ---
+    # --- 6. DESTINATION ---
     new_dest = None
     found_marker = False
     
@@ -209,7 +205,6 @@ def parse_intent(state: AgentState):
         if token in lowered_text:
             try:
                 candidate = text.split(token, 1)[1].strip("?.").title()
-                # Forbidden words filter
                 forbidden = ["hi", "hello", "start", "budget", "usd", "limit", "no", "yes", "change", "date"] + date_kws
                 if len(candidate) > 2 and not any(k in candidate.lower() for k in forbidden):
                     new_dest = candidate
@@ -220,7 +215,6 @@ def parse_intent(state: AgentState):
     if not found_marker:
         forbidden = ["hi", "hello", "start", "budget", "usd", "limit", "no", "yes", "change", "date"] + date_kws
         has_forbidden = any(f in lowered_text for f in forbidden)
-        
         if not has_forbidden and len(text.split()) < 4 and not any(char.isdigit() for char in text):
             new_dest = text.title()
 
@@ -233,33 +227,29 @@ def parse_intent(state: AgentState):
     updates["user_query"] = text
     return updates
 
-# --- 4. Node: Gather Requirements (CLEAN TEXT) ---
+# --- 4. Node: Gather Requirements ---
 def gather_requirements(state: AgentState):
     if not state.get("destination"):
-        return {"messages": [AIMessage(content="👋 Welcome to Warden Travel! Which **City** or **Country** are you visiting?")]}
+        return {"messages": [AIMessage(content="👋 Welcome to Warden Travel! Which City or Country are you visiting?")]}
     
     if not state.get("check_in"):
-        return {"messages": [AIMessage(content=f"Great, **{state['destination']}** is beautiful! 📅 When would you like to **Check-in**? (YYYY-MM-DD) or just say 'Monday'")]}
+        return {"messages": [AIMessage(content=f"Great, {state['destination']} is beautiful! 📅 When would you like to Check-in? (YYYY-MM-DD) or say 'Monday'")]}
     
     if not state.get("guests"):
-        intro = ""
-        if state.get("date_just_set"):
-            intro = f"The date for {state['user_query']} is **{state['check_in']}**, got it.\n\n"
-        return {"messages": [AIMessage(content=f"{intro}👥 **How many guests** and how many **rooms** do you need? (e.g. 2 guests 1 room)")]}
+        intro = f"The date for {state['destination']} is {state['check_in']}, got it.\n\n" if state.get("date_just_set") else ""
+        return {"messages": [AIMessage(content=f"{intro}👥 How many guests and how many rooms do you need? (e.g. **2 guests 1 room** or **3 guests 3 rooms**)")]}
 
-    # Clean text: No markdown asterisks in the examples
     if not state.get("budget_max"):
-        return {"messages": [AIMessage(content="💰 What is your **budget per night**? (e.g. **$100-$200**, **under $300**, **above $300**, **or no limit**).")]}
+        return {"messages": [AIMessage(content="💰 What is your budget per night? (e.g. **$100-$200**, **under $300**, **above $300**, or **no limit**).")]}
 
     return {}
 
-# --- 5. Node: Search Hotels (Deep Search Fix) ---
+# --- 5. Node: Search Hotels ---
 def get_destination_data(city):
     if not BOOKING_KEY: return None, None
     try:
         url = "https://booking-com.p.rapidapi.com/v1/hotels/locations"
-        headers = {"X-RapidAPI-Key": BOOKING_KEY, "X-RapidAPI-Host": "booking-com.p.rapidapi.com"}
-        r = requests.get(url, headers=headers, params={"name": city, "locale": "en-us"}, timeout=10)
+        r = requests.get(url, headers={"X-RapidAPI-Key": BOOKING_KEY, "X-RapidAPI-Host": "booking-com.p.rapidapi.com"}, params={"name": city, "locale": "en-us"}, timeout=10)
         data = r.json()
         if data: return data[0].get("dest_id"), data[0].get("dest_type")
     except: pass
@@ -268,132 +258,59 @@ def get_destination_data(city):
 def search_hotels(state: AgentState):
     if state.get("hotels"): return {}
 
-    city = state.get("destination")
-    checkin = state.get("check_in")
-    guests = state.get("guests", 1)
-    b_min = state.get("budget_min", 0)
-    b_max = state.get("budget_max", 20000) 
-    
-    msg_start = f"🔎 Searching hotels in **{city}** ({checkin}) "
-    if b_max >= 20000: msg_start += "with **no limit**..."
-    else: msg_start += f"within **${b_min:.0f}-${b_max:.0f}**..."
+    city, checkin, guests = state.get("destination"), state.get("check_in"), state.get("guests", 1)
+    b_min, b_max = state.get("budget_min", 0), state.get("budget_max", 20000) 
     
     dest_id, dest_type = get_destination_data(city)
-    if not dest_id: 
-        return {"messages": [AIMessage(content=f"⚠️ Could not find location '{city}'.")]}
+    if not dest_id: return {"messages": [AIMessage(content=f"⚠️ Could not find location '{city}'.")]}
 
     url = "https://booking-com.p.rapidapi.com/v1/hotels/search"
-    headers = {"X-RapidAPI-Key": BOOKING_KEY, "X-RapidAPI-Host": "booking-com.p.rapidapi.com"}
-    params = {
-        "dest_id": str(dest_id), "dest_type": dest_type,
-        "checkin_date": checkin, "checkout_date": state["check_out"],
-        "adults_number": str(guests), "room_number": str(state.get("rooms", 1)),
-        "units": "metric", "filter_by_currency": "USD", "order_by": "price"
-    }
-
+    params = {"dest_id": str(dest_id), "dest_type": dest_type, "checkin_date": checkin, "checkout_date": state["check_out"], "adults_number": str(guests), "units": "metric", "filter_by_currency": "USD", "order_by": "price"}
+    
     try:
-        response = requests.get(url, headers=headers, params=params, timeout=20)
-        # Fetch 60 results to ensure we find budget options in expensive cities
-        raw_data = response.json().get("result", [])[:60] 
+        r = requests.get(url, headers={"X-RapidAPI-Key": BOOKING_KEY, "X-RapidAPI-Host": "booking-com.p.rapidapi.com"}, params=params, timeout=20)
+        raw_data = r.json().get("result", [])[:60]
         hotels = []
-        
         for h in raw_data:
-            try: price = float(h.get("composite_price_breakdown", {}).get("gross_amount", {}).get("value", 0))
-            except: price = 0.0
-            if price == 0: price = float(h.get("min_total_price", 150))
-            
-            # BUDGET FILTER
+            try: price = float(h.get("composite_price_breakdown", {}).get("gross_amount", {}).get("value", h.get("min_total_price", 150)))
+            except: price = 150.0
             if b_min <= price <= b_max:
-                name = h.get("hotel_name", "Unknown")
-                score = h.get("review_score", 0) or 0
-                rating = "⭐" * int(round(score/2)) if score else "New"
-                hotels.append({"name": name, "price": price, "rating": rating})
+                hotels.append({"name": h.get("hotel_name", "Hotel"), "price": price, "rating": "⭐" * int(round((h.get("review_score", 0) or 0)/2)) or "New"})
                 if len(hotels) >= 5: break 
-
+        
         if not hotels:
-            # Descriptive error handling
-            if raw_data:
-                return {"messages": [AIMessage(content=f"😔 I found {len(raw_data)} hotels in {city}, but **none were within your budget**.\n\nTry saying **'Change budget'** to increase it.")]}
-            else:
-                return {"messages": [AIMessage(content=f"😔 No hotels found in {city} for these dates.\nTry saying **'Change date'**.")]}
-
-        options_text = ""
-        for i, h in enumerate(hotels):
-            options_text += f"{i+1}. **{h['name']}** — ${h['price']:.2f} {h['rating']}\n"
-            
-        final_msg = f"{msg_start}\n\nI found {len(hotels)} options:\n\n{options_text}\nReply with the **number** to book."
-        return {"hotels": hotels, "messages": [AIMessage(content=final_msg)]}
-
-    except Exception as e:
-        return {"messages": [AIMessage(content=f"Search Error: {str(e)}")]}
+            return {"messages": [AIMessage(content=f"😔 Found hotels in {city}, but none matching your budget. Try saying 'Change budget'.")]}
+        
+        msg = f"🔎 Found options in {city} for {checkin}:\n\n" + "\n".join([f"{i+1}. {h['name']} - ${h['price']:.2f} {h['rating']}" for i, h in enumerate(hotels)])
+        return {"hotels": hotels, "messages": [AIMessage(content=msg + "\n\nReply with the number to book.")]}
+    except Exception as e: return {"messages": [AIMessage(content=f"Search Error: {str(e)}")]}
 
 # --- 6. Node: Select Room ---
 def select_room(state: AgentState):
     if state.get("selected_hotel") and not state.get("room_options"):
         hotel = state["selected_hotel"]
         base = hotel["price"]
-        
-        room_options = [
-            {"type": "Standard", "price": base},
-            {"type": "Deluxe", "price": round(base * 1.3, 2)},
-            {"type": "Executive", "price": round(base * 2.5, 2)}
-        ]
-        
-        msg = f"For **{hotel['name']}**, select a room:\n\n"
-        for i, r in enumerate(room_options):
-            msg += f"{i+1}. **{r['type']}** — ${r['price']:.2f}\n"
-        msg += "\nReply with **1, 2, or 3**."
+        room_options = [{"type": "Standard", "price": base}, {"type": "Deluxe", "price": round(base * 1.3, 2)}]
+        msg = f"For {hotel['name']}, select a room:\n1. Standard - ${base}\n2. Deluxe - ${room_options[1]['price']}\nReply with 1 or 2."
         return {"room_options": room_options, "messages": [AIMessage(content=msg)]}
     return {}
 
 # --- 7. Node: Book Hotel ---
 def book_hotel(state: AgentState):
     if not state.get("final_room_type"): return {}
-    hotel = state["selected_hotel"]["name"]
-    price = state["final_price"]
-    hcn = f"#{random.randint(10000, 99999)}BR"
-    
-    result = warden_client.submit_booking(hotel, price, state["destination"], 0.0)
-    tx = result.get("tx_hash", "0xMOCK_TX")
-    tx_url = f"https://sepolia.basescan.org/tx/{tx}"
-    
-    msg = f"""🎉 **Booking Confirmed!**
-
-🏨 **{hotel}** ({state['final_room_type']})
-📍 **{state['destination']}**
-📅 **{state['check_in']}**
-🎫 Ref: `{hcn}`
-
-💰 Paid: ${price:.2f}
-🔗 [View Transaction]({tx_url})
-"""
-    return {"final_status": "Booked", "confirmation_number": hcn, "messages": [AIMessage(content=msg)]}
+    res = warden_client.submit_booking(state["selected_hotel"]["name"], state["final_price"], state["destination"], 0.0)
+    tx = res.get("tx_hash", "0xMOCK_TX")
+    msg = f"🎉 Booking Confirmed!\n\nHotel: {state['selected_hotel']['name']}\nPrice: ${state['final_price']}\n[View Transaction](https://sepolia.basescan.org/tx/{tx})"
+    return {"final_status": "Booked", "messages": [AIMessage(content=msg)]}
 
 # --- Routing ---
 def route_step(state):
-    if not state.get("destination") or not state.get("check_in") or not state.get("guests"):
-        return "gather"
-    
-    # Strict check for 0.0 budget
-    if state.get("budget_max") is None: return "gather"
-    if state.get("budget_max") == 0.0 and not state.get("hotels"): return "gather"
+    if not state.get("destination") or not state.get("check_in") or not state.get("guests") or state.get("budget_max") is None: return "gather"
+    if not state.get("hotels"): return "search"
+    if not state.get("selected_hotel"): return END
+    if not state.get("final_room_type"): return "select_room" if not state.get("room_options") else END
+    return "book"
 
-    if not state.get("hotels") and not state.get("selected_hotel"):
-        return "search"
-        
-    if state.get("hotels") == [] and not state.get("selected_hotel"):
-        return END
-
-    if not state.get("selected_hotel"): return "wait_for_selection"
-    
-    if not state.get("final_room_type"):
-        if not state.get("room_options"): return "select_room"
-        else: return "wait_for_room"
-        
-    if state.get("final_status") != "Booked": return "book"
-    return END
-
-# --- Graph ---
 workflow = StateGraph(AgentState)
 workflow.add_node("parse", parse_intent); workflow.add_node("gather", gather_requirements)
 workflow.add_node("search", search_hotels); workflow.add_node("select_room", select_room)
