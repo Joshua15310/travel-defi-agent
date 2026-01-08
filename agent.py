@@ -238,7 +238,7 @@ def gather_requirements(state: AgentState):
         intro = f"The date for {state['destination']} is {state['check_in']}, got it.\n\n" if state.get("date_just_set") else ""
         return {"messages": [AIMessage(content=f"{intro}👥 How many guests and how many rooms do you need?\n\nExamples:\n- 2 guests 1 room\n- 3 guests 3 rooms")]}
     if state.get("budget_max") is None:
-        return {"messages": [AIMessage(content="💰 What is your budget per night?\n\nExamples:\n- My budget is between $400 and $500\n- My budget is between $400 to $500\n- My budget is under $300\n- My budget is above $300\n- no limit")]}
+        return {"messages": [AIMessage(content="💰 What is your budget per night?\n\nExamples:\n- My budget is between \$400 and \$500\n- My budget is between $400 to $500\n- My budget is under $300\n- My budget is above $300\n- no limit")]}
     return {}
 
 # --- 6. Node: Search Hotels ---
