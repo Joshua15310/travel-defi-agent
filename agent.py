@@ -249,7 +249,7 @@ def gather_requirements(state: AgentState):
 
     # Clean text: No markdown asterisks in the examples
     if not state.get("budget_max"):
-        return {"messages": [AIMessage(content="💰 What is your **budget per night**? (e.g. 100-200, under 300, above 300, or no limit).")]}
+        return {"messages": [AIMessage(content="💰 What is your **budget per night**? (e.g. **$100-$200**, **under $300**, **above $300**, **or no limit**).")]}
 
     return {}
 
