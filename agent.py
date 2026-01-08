@@ -240,13 +240,37 @@ def search_hotels(state: AgentState):
     if not dest_id: return {"messages": [AIMessage(content=f"⚠️ Could not find location '{city}'.")]}
     
     url = "https://booking-com.p.rapidapi.com/v1/hotels/search"
-    params = {"dest_id": str(dest_id), "dest_type": dest_type, "checkin_date": checkin, "checkout_date": state["check_out"], "adults_number": str(guests), "units": "metric", "filter_by_currency": "USD", "order_by": "price"}
+    params = {
+        "dest_id": str(dest_id), 
+        "dest_type": dest_type, 
+        "checkin_date": checkin, 
+        "checkout_date": state["check_out"], 
+        "adults_number": str(guests), 
+        "units": "metric", 
+        "filter_by_currency": "USD", 
+        "order_by": "price"
+    }
     
     try:
+        # --- DEBUG PRINT START ---
+        print(f"DEBUG: Searching hotels in {city} (ID: {dest_id})")
+        # --- DEBUG PRINT END ---
+
         r = requests.get(url, headers={"X-RapidAPI-Key": BOOKING_KEY, "X-RapidAPI-Host": "booking-com.p.rapidapi.com"}, params=params, timeout=20)
-        # Increased to 100 to catch cheaper hotels further down the list
+        
+        # --- DEBUG PRINT START ---
+        print(f"DEBUG: API Status Code: {r.status_code}")
+        if r.status_code != 200:
+            print(f"DEBUG: API Error Response: {r.text}")
+            return {"messages": [AIMessage(content=f"⚠️ API Error ({r.status_code}): {r.text[:100]}")]}
+        # --- DEBUG PRINT END ---
+
         raw_data = r.json().get("result", [])[:100]
         
+        # Check if raw_data is empty even on 200 OK
+        if not raw_data:
+            print(f"DEBUG: API returned 200 OK but 'result' list is empty. Full response: {r.json()}")
+
         all_parsed_hotels = []
         filtered_hotels = []
 
@@ -285,15 +309,16 @@ def search_hotels(state: AgentState):
         
         # 3. Total Failure Case
         else:
-            return {"messages": [AIMessage(content=f"😔 No hotels found in {city} at all. Try changing the date or city.")]}
+            return {"messages": [AIMessage(content=f"😔 No hotels found in {city} at all. (API returned 0 results)")]}
 
         # Format output
         options_list = "\n".join([f"- {i+1}. {h['name']} - ${h['price']:.2f} {h['rating']}" for i, h in enumerate(final_list)])
         msg = f"{msg_intro}\n\n{options_list}\n\nReply with the number to book."
         return {"hotels": final_list, "messages": [AIMessage(content=msg)]}
 
-    except Exception as e: return {"messages": [AIMessage(content=f"Search Error: {str(e)}")]}
-
+    except Exception as e: 
+        print(f"DEBUG: Exception in search_hotels: {str(e)}")
+        return {"messages": [AIMessage(content=f"Search Error: {str(e)}")]}
 def select_room(state: AgentState):
     if state.get("selected_hotel") and not state.get("room_options"):
         hotel = state["selected_hotel"]
