@@ -141,7 +141,19 @@ def parse_intent(state: AgentState):
 
     if not text: return {}
 
-    # --- RESET ---
+    # --- RESET COMMANDS ---
+    # Fix for "Change Date"
+    if "change" in lowered_text and ("date" in lowered_text or "day" in lowered_text):
+        updates["check_in"] = ""
+        updates["hotels"] = []
+        return updates
+        
+    # Fix for "Change Budget"
+    if "change" in lowered_text and "budget" in lowered_text:
+        updates["budget_max"] = None
+        updates["hotels"] = []
+        return updates
+
     if "which" in lowered_text and ("date" in lowered_text or "day" in lowered_text):
         updates["check_in"] = ""
         updates["hotels"] = []
@@ -173,28 +185,26 @@ def parse_intent(state: AgentState):
             updates["rooms"] = nums[1] if len(nums) > 1 else 1
             updates["hotels"] = []
 
-    # --- 4. DESTINATION (With "Next Thursday" Fix) ---
-    # Only look for a destination if this input is NOT a date, NOT a budget, and NOT guest count
+    # --- 4. DESTINATION (With "Change Date" Fix) ---
     if not is_date_input and not budget_updates and "guest" not in lowered_text:
         new_dest = None
         found_marker = False
         
-        # Explicit marker "in London"
+        # Explicit marker
         for token in [" in ", " to ", " at ", "about "]:
             if token in lowered_text:
                 try:
                     candidate = text.split(token, 1)[1].strip("?.").title()
-                    # Final check to ensure we didn't capture a date string by accident
                     if len(candidate) > 2 and not any(k in candidate.lower() for k in date_kws):
                         new_dest = candidate
                         found_marker = True
                         break
                 except: pass
         
-        # Blind capture (Prevent "Next Thursday" or "100-200" from being a city)
+        # Blind capture
         if not found_marker:
-            # Forbidden words for a city name
-            forbidden = date_kws + ["hi", "hello", "start", "budget", "usd", "limit"]
+            # Forbidden words - added 'change' and 'date' to prevent bugs
+            forbidden = date_kws + ["hi", "hello", "start", "budget", "usd", "limit", "no", "change", "date"]
             has_forbidden = any(f in lowered_text for f in forbidden)
             
             if not has_forbidden and len(text.split()) < 4 and not any(char.isdigit() for char in text):
@@ -222,7 +232,7 @@ def parse_intent(state: AgentState):
     updates["user_query"] = text
     return updates
 
-# --- 4. Node: Gather Requirements ---
+# --- 4. Node: Gather Requirements (Fixed Prompt) ---
 def gather_requirements(state: AgentState):
     # 1. Destination
     if not state.get("destination"):
@@ -237,9 +247,9 @@ def gather_requirements(state: AgentState):
         intro = ""
         if state.get("date_just_set"):
             intro = f"The date for {state['user_query']} is **{state['check_in']}**, got it.\n\n"
-        return {"messages": [AIMessage(content=f"{intro}👥 **How many guests** and how many **rooms** do you need? (e.g. 2 guests 1 room or 3 guests 3 rooms)")]}
+        return {"messages": [AIMessage(content=f"{intro}👥 **How many guests** and how many **rooms** do you need? (e.g. 2 guests 1 room)")]}
 
-    # 4. Budget (UPDATED FORMAT)
+    # 4. Budget (TEXT FIXED)
     if not state.get("budget_max"):
         return {"messages": [AIMessage(content="💰 What is your **budget per night**? (e.g. **$100-$200**, **under $300**, **above $300**, or **no limit**).")]}
 
@@ -285,7 +295,7 @@ def search_hotels(state: AgentState):
 
     try:
         response = requests.get(url, headers=headers, params=params, timeout=15)
-        raw_data = response.json().get("result", [])[:20] # Fetch more to filter
+        raw_data = response.json().get("result", [])[:20] 
         hotels = []
         
         for h in raw_data:
