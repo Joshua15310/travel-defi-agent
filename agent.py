@@ -22,8 +22,6 @@ BOOKING_KEY = os.getenv("BOOKING_API_KEY")
 class AgentState(TypedDict, total=False):
     messages: Annotated[List[BaseMessage], operator.add]
     user_query: str
-    
-    # Booking Parameters
     destination: str
     check_in: str
     check_out: str
@@ -31,15 +29,12 @@ class AgentState(TypedDict, total=False):
     rooms: int
     budget_min: float
     budget_max: float
-    
-    # Search Results
     hotels: List[dict]
     selected_hotel: dict
     room_options: List[dict]
     final_room_type: str
     final_price: float
-    
-    # Transaction Info
+    needs_swap: bool
     tx_hash: str
     confirmation_number: str
     final_status: str
@@ -77,39 +72,40 @@ def extract_text(content) -> str:
     return str(content)
 
 def parse_budget(text: str):
-    """Extracts budget range from text."""
     text = text.lower().replace("$", "")
     updates = {}
     
-    # Pattern: "100-200" or "100 to 200"
+    # 1. Handle "No Limit"
+    if "no limit" in text or "unlimited" in text:
+        updates["budget_min"] = 0.0
+        updates["budget_max"] = 20000.0 # High cap for logic
+        return updates
+
+    # 2. Pattern: "100-200"
     range_match = re.search(r'(\d+)\s*-\s*(\d+)', text)
-    if not range_match:
-        range_match = re.search(r'(\d+)\s+to\s+(\d+)', text)
-        
     if range_match:
         updates["budget_min"] = float(range_match.group(1))
         updates["budget_max"] = float(range_match.group(2))
         return updates
 
-    # Pattern: "under 300", "less than 300"
+    # 3. Pattern: "under 300"
     under_match = re.search(r'(?:under|below|less than)\s*(\d+)', text)
     if under_match:
         updates["budget_min"] = 0.0
         updates["budget_max"] = float(under_match.group(1))
         return updates
 
-    # Pattern: "above 300", "over 300"
+    # 4. Pattern: "above 300"
     over_match = re.search(r'(?:above|over|more than)\s*(\d+)', text)
     if over_match:
         updates["budget_min"] = float(over_match.group(1))
-        updates["budget_max"] = 5000.0 # High cap
+        updates["budget_max"] = 20000.0
         return updates
         
-    # Pattern: Just a number "200" (Assume it's a max budget or target)
-    # Only if short string to avoid confusing dates/years
+    # 5. Just a number (likely max budget)
     if text.strip().isdigit():
         val = float(text)
-        if val > 30 and val < 3000: # Reasonable hotel price range
+        if val > 30: 
             updates["budget_min"] = 0.0
             updates["budget_max"] = val
             return updates
@@ -145,48 +141,23 @@ def parse_intent(state: AgentState):
 
     if not text: return {}
 
-    # --- RESET COMMANDS ---
+    # --- RESET ---
     if "which" in lowered_text and ("date" in lowered_text or "day" in lowered_text):
         updates["check_in"] = ""
         updates["hotels"] = []
         return updates
 
     # --- 1. BUDGET PARSING ---
-    # Check for budget in ANY message
     budget_updates = parse_budget(text)
     if budget_updates:
         updates.update(budget_updates)
-        updates["hotels"] = [] # Trigger re-search if budget changes
+        updates["hotels"] = [] # Re-search if budget changes
 
-    # --- 2. DESTINATION ---
-    new_dest = None
-    found_marker = False
-    for token in [" in ", " to ", " at ", "about "]:
-        if token in lowered_text:
-            try:
-                candidate = text.split(token, 1)[1].strip("?.").title()
-                # Ignore if candidate contains digits (unless it's a date update)
-                if len(candidate) > 2 and not any(char.isdigit() for char in candidate):
-                    new_dest = candidate
-                    found_marker = True
-                    break
-            except: pass
+    # --- 2. DATES (Strict Parsing) ---
+    date_kws = ["jan", "feb", "mar", "apr", "tomorrow", "next", "monday", "tuesday", "wednesday", "thursday", "friday", "year", "week"]
+    is_date_input = any(k in lowered_text for k in date_kws) or (any(char.isdigit() for char in text) and ("-" in text or "/" in text))
     
-    if not found_marker and len(text.split()) < 4 and not any(char.isdigit() for char in text):
-        if lowered_text not in ["hi", "hello", "start", "yes", "no"]:
-            new_dest = text.title()
-
-    if new_dest:
-        updates["destination"] = new_dest
-        updates["hotels"] = []
-        updates["selected_hotel"] = {}
-        updates["final_room_type"] = ""
-
-    # --- 3. DATES ---
-    is_date_input = any(char.isdigit() for char in text) and ("-" in text or "/" in text)
-    date_kws = ["jan", "feb", "mar", "apr", "tomorrow", "next", "monday", "tuesday", "wednesday", "thursday", "friday"]
-    
-    if "check-in" in lowered_ai or any(k in lowered_text for k in date_kws):
+    if "check-in" in lowered_ai or is_date_input:
         parsed = parse_date(text)
         if parsed:
             updates["check_in"] = parsed
@@ -194,7 +165,7 @@ def parse_intent(state: AgentState):
             updates["hotels"] = []
             updates["date_just_set"] = True
 
-    # --- 4. GUESTS ---
+    # --- 3. GUESTS ---
     elif "guests" in lowered_ai or "guest" in lowered_text:
         nums = [int(s) for s in text.split() if s.isdigit()]
         if nums:
@@ -202,9 +173,42 @@ def parse_intent(state: AgentState):
             updates["rooms"] = nums[1] if len(nums) > 1 else 1
             updates["hotels"] = []
 
+    # --- 4. DESTINATION (With "Next Thursday" Fix) ---
+    # Only look for a destination if this input is NOT a date, NOT a budget, and NOT guest count
+    if not is_date_input and not budget_updates and "guest" not in lowered_text:
+        new_dest = None
+        found_marker = False
+        
+        # Explicit marker "in London"
+        for token in [" in ", " to ", " at ", "about "]:
+            if token in lowered_text:
+                try:
+                    candidate = text.split(token, 1)[1].strip("?.").title()
+                    # Final check to ensure we didn't capture a date string by accident
+                    if len(candidate) > 2 and not any(k in candidate.lower() for k in date_kws):
+                        new_dest = candidate
+                        found_marker = True
+                        break
+                except: pass
+        
+        # Blind capture (Prevent "Next Thursday" or "100-200" from being a city)
+        if not found_marker:
+            # Forbidden words for a city name
+            forbidden = date_kws + ["hi", "hello", "start", "budget", "usd", "limit"]
+            has_forbidden = any(f in lowered_text for f in forbidden)
+            
+            if not has_forbidden and len(text.split()) < 4 and not any(char.isdigit() for char in text):
+                new_dest = text.title()
+
+        if new_dest:
+            updates["destination"] = new_dest
+            updates["hotels"] = []
+            updates["selected_hotel"] = {}
+            updates["final_room_type"] = ""
+
     # --- 5. SELECTION ---
     if state.get("hotels") and not updates.get("hotels") == []:
-        if text.isdigit() and not budget_updates: # Only select if it's NOT a budget number
+        if text.isdigit() and not budget_updates and not is_date_input:
             idx = int(text) - 1
             if not state.get("selected_hotel"):
                 if 0 <= idx < len(state["hotels"]):
@@ -218,7 +222,7 @@ def parse_intent(state: AgentState):
     updates["user_query"] = text
     return updates
 
-# --- 4. Node: Gather Requirements (Budget Added) ---
+# --- 4. Node: Gather Requirements ---
 def gather_requirements(state: AgentState):
     # 1. Destination
     if not state.get("destination"):
@@ -228,16 +232,16 @@ def gather_requirements(state: AgentState):
     if not state.get("check_in"):
         return {"messages": [AIMessage(content=f"Great, **{state['destination']}** is beautiful! 📅 When would you like to **Check-in**? (YYYY-MM-DD) or just say 'Monday'")]}
     
-    # 3. Guests (with Date confirmation)
+    # 3. Guests
     if not state.get("guests"):
         intro = ""
         if state.get("date_just_set"):
             intro = f"The date for {state['user_query']} is **{state['check_in']}**, got it.\n\n"
-        return {"messages": [AIMessage(content=f"{intro}👥 **How many guests** and how many **rooms** do you need? (e.g. 2 guests 1 room)")]}
+        return {"messages": [AIMessage(content=f"{intro}👥 **How many guests** and how many **rooms** do you need? (e.g. 2 guests 1 room or 3 guests 3 rooms)")]}
 
-    # 4. Budget (NEW STEP)
+    # 4. Budget (UPDATED FORMAT)
     if not state.get("budget_max"):
-        return {"messages": [AIMessage(content="💰 What is your **budget per night**? (e.g. **$100-$200**, **under $300**, or **no limit**).")]}
+        return {"messages": [AIMessage(content="💰 What is your **budget per night**? (e.g. **$100-$200**, **under $300**, **above $300**, or **no limit**).")]}
 
     return {}
 
@@ -259,11 +263,12 @@ def search_hotels(state: AgentState):
     city = state.get("destination")
     checkin = state.get("check_in")
     guests = state.get("guests", 1)
-    # Default to high budget if not set/no limit
     b_min = state.get("budget_min", 0)
-    b_max = state.get("budget_max", 10000) 
+    b_max = state.get("budget_max", 20000) 
     
-    msg_start = f"🔎 Searching hotels in **{city}** ({checkin}) within **${b_min:.0f}-${b_max:.0f}**..."
+    msg_start = f"🔎 Searching hotels in **{city}** ({checkin}) "
+    if b_max >= 20000: msg_start += "with **no limit**..."
+    else: msg_start += f"within **${b_min:.0f}-${b_max:.0f}**..."
     
     dest_id, dest_type = get_destination_data(city)
     if not dest_id: 
@@ -279,9 +284,8 @@ def search_hotels(state: AgentState):
     }
 
     try:
-        # Fetch more results (15) to allow for filtering
         response = requests.get(url, headers=headers, params=params, timeout=15)
-        raw_data = response.json().get("result", [])[:15]
+        raw_data = response.json().get("result", [])[:20] # Fetch more to filter
         hotels = []
         
         for h in raw_data:
@@ -295,10 +299,10 @@ def search_hotels(state: AgentState):
                 score = h.get("review_score", 0) or 0
                 rating = "⭐" * int(round(score/2)) if score else "New"
                 hotels.append({"name": name, "price": price, "rating": rating})
-                if len(hotels) >= 5: break # Stop after finding 5 matches
+                if len(hotels) >= 5: break 
 
         if not hotels:
-            return {"messages": [AIMessage(content=f"😔 No hotels found in {city} within that budget.\nTry saying **'Change budget to $500'** or **'Change date'**.")]}
+            return {"messages": [AIMessage(content=f"😔 No hotels found in {city} matching that budget.\nTry saying **'Change budget'** or **'Change date'**.")]}
 
         options_text = ""
         for i, h in enumerate(hotels):
