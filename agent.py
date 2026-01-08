@@ -209,14 +209,16 @@ def parse_intent(state: AgentState):
         if token in lowered_text:
             try:
                 candidate = text.split(token, 1)[1].strip("?.").title()
-                if len(candidate) > 2 and not any(char.isdigit() for char in candidate):
+                # Forbidden words filter
+                forbidden = ["hi", "hello", "start", "budget", "usd", "limit", "no", "yes", "change", "date"] + date_kws
+                if len(candidate) > 2 and not any(k in candidate.lower() for k in forbidden):
                     new_dest = candidate
                     found_marker = True
                     break
             except: pass
     
     if not found_marker:
-        forbidden = ["hi", "hello", "start", "budget", "usd", "limit", "no", "yes", "change", "date"]
+        forbidden = ["hi", "hello", "start", "budget", "usd", "limit", "no", "yes", "change", "date"] + date_kws
         has_forbidden = any(f in lowered_text for f in forbidden)
         
         if not has_forbidden and len(text.split()) < 4 and not any(char.isdigit() for char in text):
@@ -231,7 +233,7 @@ def parse_intent(state: AgentState):
     updates["user_query"] = text
     return updates
 
-# --- 4. Node: Gather Requirements (Fixed Text) ---
+# --- 4. Node: Gather Requirements (CLEAN TEXT) ---
 def gather_requirements(state: AgentState):
     if not state.get("destination"):
         return {"messages": [AIMessage(content="👋 Welcome to Warden Travel! Which **City** or **Country** are you visiting?")]}
@@ -245,9 +247,9 @@ def gather_requirements(state: AgentState):
             intro = f"The date for {state['user_query']} is **{state['check_in']}**, got it.\n\n"
         return {"messages": [AIMessage(content=f"{intro}👥 **How many guests** and how many **rooms** do you need? (e.g. 2 guests 1 room)")]}
 
-    # Clean text: No asterisks in the examples to avoid broken formatting
+    # Clean text: No markdown asterisks in the examples
     if not state.get("budget_max"):
-        return {"messages": [AIMessage(content="💰 What is your **budget per night**? (e.g. $100-$200, under $300, above $300, or no limit).")]}
+        return {"messages": [AIMessage(content="💰 What is your **budget per night**? (e.g. 100-200, under 300, above 300, or no limit).")]}
 
     return {}
 
@@ -291,8 +293,8 @@ def search_hotels(state: AgentState):
 
     try:
         response = requests.get(url, headers=headers, params=params, timeout=20)
-        # Fetch 50 results (instead of 20) to increase chances of finding budget options
-        raw_data = response.json().get("result", [])[:50] 
+        # Fetch 60 results to ensure we find budget options in expensive cities
+        raw_data = response.json().get("result", [])[:60] 
         hotels = []
         
         for h in raw_data:
@@ -309,9 +311,9 @@ def search_hotels(state: AgentState):
                 if len(hotels) >= 5: break 
 
         if not hotels:
-            # Better error message for London (empty due to price)
+            # Descriptive error handling
             if raw_data:
-                return {"messages": [AIMessage(content=f"😔 I found hotels in {city}, but **none were under ${b_max:.0f}**.\n\nTry saying **'Change budget'** to increase it.")]}
+                return {"messages": [AIMessage(content=f"😔 I found {len(raw_data)} hotels in {city}, but **none were within your budget**.\n\nTry saying **'Change budget'** to increase it.")]}
             else:
                 return {"messages": [AIMessage(content=f"😔 No hotels found in {city} for these dates.\nTry saying **'Change date'**.")]}
 
@@ -369,15 +371,12 @@ def book_hotel(state: AgentState):
 
 # --- Routing ---
 def route_step(state):
-    # Only force "gather" if essential info is missing. 
-    # budget_max check must be explicitly strict (not 0.0)
     if not state.get("destination") or not state.get("check_in") or not state.get("guests"):
         return "gather"
     
-    if state.get("budget_max") is None: # 0.0 is valid, None is not
-        return "gather"
-    if state.get("budget_max") == 0.0 and not state.get("hotels"): # Catch reset state
-        return "gather"
+    # Strict check for 0.0 budget
+    if state.get("budget_max") is None: return "gather"
+    if state.get("budget_max") == 0.0 and not state.get("hotels"): return "gather"
 
     if not state.get("hotels") and not state.get("selected_hotel"):
         return "search"
