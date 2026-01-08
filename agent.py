@@ -245,7 +245,7 @@ def gather_requirements(state: AgentState):
 
     # 4. Budget - CLEAN PLAIN TEXT VERSION
     if not state.get("budget_max"):
-        return {"messages": [AIMessage(content="💰 What is your budget per night?\n\nExamples:\n$100 to $200\nunder $300\nabove $300\nno limit")]}
+        return {"messages": [AIMessage(content="💰 What is your budget per night?\n\nExamples:\n- $100 to $200\n- under $300\n- above $300\n- no limit")]}
 
     return {}
 
