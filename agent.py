@@ -137,6 +137,16 @@ def parse_intent(state: AgentState):
 
     if not text: return {}
 
+    # --- FEATURE 1: GLOBAL RESET ---
+    # Detects "start over", "reset", "restart" and wipes state
+    if "start over" in lowered_text or "reset" in lowered_text or "restart" in lowered_text:
+        return {
+            "destination": "", "check_in": "", "check_out": "", "guests": 0, "rooms": 0,
+            "budget_min": 0.0, "budget_max": None, "hotels": [], "selected_hotel": {},
+            "room_options": [], "final_room_type": "", "final_price": 0.0,
+            "messages": [AIMessage(content="🔄 System reset. Let's start over! Where would you like to go?")]
+        }
+
     # --- FIX 1: Explicitly handle "Change Location" ---
     if "change" in lowered_text:
         if "location" in lowered_text or "city" in lowered_text or "place" in lowered_text or "country" in lowered_text:
@@ -228,20 +238,28 @@ def parse_intent(state: AgentState):
         updates["selected_hotel"] = {}
     return updates
 
-# --- 5. Node: Gather Requirements ---
+# --- 5. Node: Gather Requirements (WITH CONTEXTUAL HINTS) ---
 def gather_requirements(state: AgentState):
+    # Common helper hint
+    reset_hint = "\n\n_(Type 'reset' at any time to start over)_"
+
     if not state.get("destination"):
         return {"messages": [AIMessage(content="👋 Welcome to Warden Travel! Which City or Country are you visiting?")]}
+    
     if not state.get("check_in"):
-        return {"messages": [AIMessage(content=f"Great, {state['destination']} is beautiful! 📅 When would you like to Check-in? (YYYY-MM-DD) or say 'Monday'")]}
+        # Hint about Natural Language Dates
+        date_hint = "\n\n_(Tip: You can say 'next Friday', 'tomorrow', or 'March 12th'!)_"
+        return {"messages": [AIMessage(content=f"Great, {state['destination']} is beautiful! 📅 When would you like to Check-in?{date_hint}{reset_hint}")]}
+    
     if not state.get("guests"):
         intro = f"The date for {state['destination']} is {state['check_in']}, got it.\n\n" if state.get("date_just_set") else ""
-        return {"messages": [AIMessage(content=f"{intro}👥 How many guests and how many rooms do you need?\n\nExamples:\n- 2 guests 1 room\n- 3 guests 3 rooms\n- 1 guest 1 rooms")]}
+        return {"messages": [AIMessage(content=f"{intro}👥 How many guests and how many rooms do you need?\n\nExamples:\n- 2 guests 1 room\n- 3 guests 3 rooms{reset_hint}")]}
+    
     if state.get("budget_max") is None:
-        return {"messages": [AIMessage(content="💰 What is your budget per night?\n\nExamples:\n- My budget is between \$400 and \$500\n- My budget is between \$400 to \$500\n- My budget is under $300\n- My budget is above $300\n- no limit")]}
+        return {"messages": [AIMessage(content=f"💰 What is your budget per night?\n\nExamples:\n- My budget is between $400 and $500\n- My budget is between $400 to $500\n- My budget is under $300\n- My budget is above $300\n- no limit{reset_hint}")]}
     return {}
 
-# --- 6. Node: Search Hotels ---
+# --- 6. Node: Search Hotels (WITH CONTEXTUAL HINTS) ---
 def get_destination_data(city):
     if not BOOKING_KEY: return None, None
     try:
@@ -320,7 +338,11 @@ def search_hotels(state: AgentState):
 
         # Format output with escaped dollar signs
         options_list = "\n".join([f"- {i+1}. {h['name']} - \${h['price']:.2f} {h['rating']}" for i, h in enumerate(final_list)])
-        msg = f"{msg_intro}\n\n{options_list}\n\nReply with the number to book."
+        
+        # --- FEATURE: DYNAMIC CHANGE HINT ---
+        hints = "\n\n_(Tip: Want different results? You can say 'change budget to under $500', 'change date to next week', or 'pick a city in Ghana instead'!)_"
+        
+        msg = f"{msg_intro}\n\n{options_list}\n\nReply with the number to book.{hints}"
         return {"hotels": final_list, "messages": [AIMessage(content=msg)]}
 
     except Exception as e: return {"messages": [AIMessage(content=f"Search Error: {str(e)}")]}
@@ -332,16 +354,32 @@ def select_room(state: AgentState):
         room_options = [{"type": "Standard", "price": base}, {"type": "Deluxe", "price": round(base * 1.3, 2)}]
         # Escaped dollar signs here too
         rooms_list = "\n".join([f"- {i+1}. {r['type']} - \${r['price']}" for i, r in enumerate(room_options)])
-        msg = f"For {hotel['name']}, select a room:\n{rooms_list}\n\nReply with 1 or 2."
+        
+        # --- FEATURE: RESET HINT ---
+        msg = f"For {hotel['name']}, select a room:\n{rooms_list}\n\nReply with 1 or 2.\n\n_(Type 'reset' to start over)_"
+        
         return {"room_options": room_options, "messages": [AIMessage(content=msg)]}
     return {}
 
 def book_hotel(state: AgentState):
     if not state.get("final_room_type"): return {}
-    res = warden_client.submit_booking(state["selected_hotel"]["name"], state["final_price"], state["destination"], 0.0)
+    
+    # --- FEATURE 2: SMART METADATA IN BOOKING ---
+    # We combine details into the name/string fields since the Warden SDK likely has a fixed signature.
+    # This ensures the check-in dates and guest count are permanently recorded on-chain.
+    
+    full_booking_details = f"{state['selected_hotel']['name']} ({state['check_in']} for {state['guests']} Guests)"
+    
+    res = warden_client.submit_booking(
+        full_booking_details,  # Name field now includes dates
+        state["final_price"], 
+        state["destination"], 
+        0.0
+    )
+    
     tx = res.get("tx_hash", "0xMOCK_TX")
     # Escaped dollar sign
-    msg = f"🎉 Booking Confirmed!\n\nHotel: {state['selected_hotel']['name']}\nPrice: \${state['final_price']}\n[View Transaction](https://sepolia.basescan.org/tx/{tx})"
+    msg = f"🎉 Booking Confirmed!\n\nHotel: {state['selected_hotel']['name']}\nDates: {state['check_in']} to {state['check_out']}\nPrice: \${state['final_price']}\n[View Transaction](https://sepolia.basescan.org/tx/{tx})\n\n_(Type 'reset' to book another trip)_"
     return {"final_status": "Booked", "messages": [AIMessage(content=msg)]}
 
 # --- 7. Routing ---
