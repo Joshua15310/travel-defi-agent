@@ -4,7 +4,8 @@ import requests
 import random
 from dotenv import load_dotenv
 from datetime import date, timedelta, datetime
-from typing import TypedDict, List, Union, Optional
+from typing import TypedDict, List, Union, Optional, Annotated
+import operator
 
 from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
 from langgraph.graph import StateGraph, END
@@ -17,8 +18,9 @@ load_dotenv()
 BOOKING_KEY = os.getenv("BOOKING_API_KEY")
 
 # --- 1. Enhanced State Management ---
+# Use operator.add to ensure messages are appended, not overwritten
 class AgentState(TypedDict, total=False):
-    messages: List[BaseMessage]
+    messages: Annotated[List[BaseMessage], operator.add]
     user_query: str
     
     # Booking Details
@@ -43,104 +45,115 @@ class AgentState(TypedDict, total=False):
 
 # --- 2. Helper: Date Parser ---
 def parse_date(text: str) -> str:
-    # Simple parser: accepts "YYYY-MM-DD" or assumes relative days if simple numbers
     try:
         return datetime.strptime(text.strip(), "%Y-%m-%d").strftime("%Y-%m-%d")
     except:
-        # Fallback: if user says "20", assume "2026-01-20" (Demo logic)
         if "jan" in text.lower(): return "2026-01-20"
         if "feb" in text.lower(): return "2026-02-10"
         return (date.today() + timedelta(days=1)).strftime("%Y-%m-%d") # Default tomorrow
 
-# --- 3. Node: Intent Parser & Router ---
+# --- 3. Node: Intent Parser & Router (ROBUST VERSION) ---
 def parse_intent(state: AgentState):
     """
     Determines what the user is answering based on previous context.
     """
+    print(f"[DEBUG] Current State Keys: {list(state.keys())}")
+    
     messages = state.get("messages", [])
-    if not messages: return {}
+    if not messages: 
+        print("[DEBUG] No messages found.")
+        return {}
     
     last_user_msg = ""
     last_ai_msg = ""
     
-    # Get last user input
+    # Robust Message Extraction (Handles objects AND dicts)
+    # 1. Find last user message
     for m in reversed(messages):
-        if isinstance(m, HumanMessage):
-            last_user_msg = m.content.strip()
+        msg_type = getattr(m, 'type', '') or m.get('type', '')
+        if msg_type == 'human' or isinstance(m, HumanMessage):
+            last_user_msg = getattr(m, 'content', '') or m.get('content', '')
             break
             
-    # Get last AI question to know what we are answering
+    # 2. Find last AI message
     for m in reversed(messages):
-        if isinstance(m, AIMessage):
-            last_ai_msg = m.content
+        msg_type = getattr(m, 'type', '') or m.get('type', '')
+        if msg_type == 'ai' or isinstance(m, AIMessage):
+            last_ai_msg = getattr(m, 'content', '') or m.get('content', '')
             break
 
-    updates = {}
-    text = last_user_msg.lower()
+    print(f"[DEBUG] Last User Input: '{last_user_msg}'")
+    print(f"[DEBUG] Last AI Context: '{last_ai_msg[:30]}...'")
 
-    # --- CRITICAL FIX: "Blind" Destination Capture ---
-    # If we don't have a destination yet, assume the user's input IS the destination.
-    # This catches "Lagos", "Nigeria", "Berlin" even without "in" or "to".
-    if not state.get("destination"):
-        # Filter out generic greetings so we don't treat "Hi" as a city
-        if text not in ["hi", "hello", "hey", "start", "restart", "menu"]:
+    updates = {}
+    text = last_user_msg.lower().strip()
+    
+    if not text: return {}
+
+    # --- CRITICAL LOGIC: Destination Capture ---
+    # Case A: Explicit "in Lagos" or "to Abuja"
+    for token in [" in ", " to ", " at "]:
+        if token in text:
+            try:
+                updates["destination"] = text.split(token)[1].strip("?.").title()
+                print(f"[DEBUG] Extracted Destination (Explicit): {updates['destination']}")
+                break
+            except: pass
+
+    # Case B: Blind Capture (First turn or missing destination)
+    # If we still don't have a destination, and the input isn't a command/greeting
+    if not state.get("destination") and not updates.get("destination"):
+        if text not in ["hi", "hello", "hey", "start", "restart", "menu", "reset"]:
             updates["destination"] = last_user_msg.title()
+            print(f"[DEBUG] Extracted Destination (Blind): {updates['destination']}")
 
     # --- Context-Aware Extraction ---
     
-    # 1. Answering Destination? (Explicit context check)
-    if "where would you like to go" in last_ai_msg.lower() or "city or country" in last_ai_msg.lower():
-        updates["destination"] = last_user_msg.title()
-    
-    # 2. Answering Dates?
-    elif "check-in" in last_ai_msg.lower():
+    # Check-in Date
+    if "check-in" in last_ai_msg.lower():
         updates["check_in"] = parse_date(last_user_msg)
-        # Auto-set checkout to +2 days
         updates["check_out"] = (datetime.strptime(updates["check_in"], "%Y-%m-%d") + timedelta(days=2)).strftime("%Y-%m-%d")
+        print(f"[DEBUG] Extracted Date: {updates['check_in']}")
 
-    # 3. Answering Guests/Rooms?
+    # Guests/Rooms
     elif "how many guests" in last_ai_msg.lower():
         nums = [int(s) for s in last_user_msg.split() if s.isdigit()]
         if nums:
             updates["guests"] = nums[0]
             updates["rooms"] = nums[1] if len(nums) > 1 else 1
+            print(f"[DEBUG] Extracted Guests: {updates['guests']}")
 
-    # 4. Picking a Hotel? (e.g., "Option 1")
+    # Hotel Selection
     elif state.get("hotels") and not state.get("selected_hotel"):
         if text.isdigit():
             idx = int(text) - 1
             if 0 <= idx < len(state["hotels"]):
                 updates["selected_hotel"] = state["hotels"][idx]
+                print(f"[DEBUG] Selected Hotel: {updates['selected_hotel']['name']}")
     
-    # 5. Picking a Room Type? (e.g., "Standard" or "1")
+    # Room Selection
     elif state.get("selected_hotel") and not state.get("final_room_type"):
         options = state.get("room_options", [])
         if text.isdigit() and 0 <= int(text)-1 < len(options):
             chosen = options[int(text)-1]
             updates["final_room_type"] = chosen["type"]
             updates["final_price"] = chosen["price"]
+            print(f"[DEBUG] Selected Room: {updates['final_room_type']}")
         elif "deluxe" in text:
-            match = next((r for r in options if "Deluxe" in r["type"]), options[0])
-            updates["final_room_type"] = match["type"]
-            updates["final_price"] = match["price"]
+            # Fallback for text selection
+            updates["final_room_type"] = options[1]["type"]
+            updates["final_price"] = options[1]["price"]
         else:
+            # Default to first option
             updates["final_room_type"] = options[0]["type"]
             updates["final_price"] = options[0]["price"]
-
-    # Initial Prompt Extraction (fallback if blind capture missed it)
-    if not state.get("destination") and not updates.get("destination"):
-        if " in " in text:
-            try: updates["destination"] = text.split(" in ")[1].strip("?.").title()
-            except: pass
 
     updates["user_query"] = last_user_msg
     return updates
 
 # --- 4. Node: Gather Requirements (The Interview) ---
 def gather_requirements(state: AgentState):
-    """
-    Ensures we have all necessary details before searching.
-    """
+    print("[DEBUG] Node: Gather Requirements")
     # 1. Check Destination
     if not state.get("destination") or state.get("destination") == "Unknown":
         return {"messages": [AIMessage(content="👋 Welcome to Warden Travel! To find you the best hotels, which **City** or **Country** are you visiting?")]}
@@ -153,7 +166,6 @@ def gather_requirements(state: AgentState):
     if not state.get("guests"):
         return {"messages": [AIMessage(content="Got the dates. 👥 **How many guests** are travelling, and how many **rooms** do you need? (e.g. '2 guests 1 room')")]}
     
-    # All good? Pass to search
     return {}
 
 # --- 5. Node: Search Hotels (Live API) ---
@@ -171,7 +183,7 @@ def get_destination_data(city):
     return None, None
 
 def search_hotels(state: AgentState):
-    # Only run if we don't have hotels yet
+    print("[DEBUG] Node: Search Hotels")
     if state.get("hotels"): return {}
 
     city = state.get("destination")
@@ -205,10 +217,9 @@ def search_hotels(state: AgentState):
             name = h.get("hotel_name", "Unknown")
             try: price = float(h.get("composite_price_breakdown", {}).get("gross_amount", {}).get("value", 0))
             except: price = 0.0
-            
             if price == 0: price = float(h.get("min_total_price", 150))
             
-            rating = "⭐" * int(round(h.get("review_score", 0)/2))
+            rating = "⭐" * int(round(h.get("review_score", 0)/2)) 
             if not rating: rating = "⭐⭐⭐"
             
             hotels.append({"name": name, "price": price, "rating": rating})
@@ -216,7 +227,6 @@ def search_hotels(state: AgentState):
         if not hotels:
             return {"messages": [AIMessage(content=f"No hotels found in {city} for these dates.")]}
 
-        # Format Output
         options_text = ""
         for i, h in enumerate(hotels):
             options_text += f"{i+1}. **{h['name']}** — ${h['price']:.2f} {h['rating']}\n"
@@ -233,12 +243,11 @@ def search_hotels(state: AgentState):
 
 # --- 6. Node: Select Room Type ---
 def select_room(state: AgentState):
-    # If we have a hotel but no room type, show options
+    print("[DEBUG] Node: Select Room")
     if state.get("selected_hotel") and not state.get("room_options"):
         hotel = state["selected_hotel"]
         base_price = hotel["price"]
         
-        # Calculate Real-ish Tiers based on the live base price
         room_options = [
             {"type": "Standard Room", "price": base_price, "desc": "Best Value"},
             {"type": "Deluxe Room", "price": round(base_price * 1.3, 2), "desc": "More Space + View"},
@@ -259,18 +268,17 @@ def select_room(state: AgentState):
 
 # --- 7. Node: Book & Confirm ---
 def book_hotel(state: AgentState):
+    print("[DEBUG] Node: Book Hotel")
     if not state.get("final_room_type"): return {}
     
-    # Simulate Blockchain Tx
     hotel_name = state["selected_hotel"]["name"]
     price = state["final_price"]
     
-    # Generate Mock Hotel Confirmation Number (HCN)
     hcn = f"#{random.randint(10000, 99999)}BR"
     
     result = warden_client.submit_booking(hotel_name, price, state["destination"], 0.0)
     tx = result.get("tx_hash", "0xMOCK_TX_HASH")
-    tx_url = f"https://sepolia.basescan.org/tx/{tx}" # Assuming Base Sepolia for Warden
+    tx_url = f"https://sepolia.basescan.org/tx/{tx}" 
     
     msg = f"""🎉 **Booking Confirmed!**
 
@@ -294,17 +302,19 @@ def book_hotel(state: AgentState):
 # --- Graph Construction ---
 def route_step(state):
     # Logic to decide "What to do next?"
+    print(f"[DEBUG] Routing... Dest:{state.get('destination')} CheckIn:{state.get('check_in')}")
+    
     if not state.get("destination") or not state.get("check_in") or not state.get("guests"):
         return "gather"
     if not state.get("hotels"):
         return "search"
     if not state.get("selected_hotel"):
-        return "wait_for_selection" # Loop back to END, wait for user input
+        return "wait_for_selection" 
     if not state.get("final_room_type"):
         if not state.get("room_options"):
             return "select_room"
         else:
-            return "wait_for_room" # Loop back, wait for user input
+            return "wait_for_room" 
     if state.get("final_status") != "Booked":
         return "book"
     return END
@@ -319,25 +329,24 @@ workflow.add_node("book", book_hotel)
 
 workflow.set_entry_point("parse")
 
-# Conditional Edges determine flow
 workflow.add_conditional_edges(
     "parse", 
     route_step,
     {
         "gather": "gather",
         "search": "search",
-        "wait_for_selection": END, # Stop and show list
+        "wait_for_selection": END, 
         "select_room": "select_room",
-        "wait_for_room": END,      # Stop and show room options
+        "wait_for_room": END,      
         "book": "book",
         END: END
     }
 )
 
-workflow.add_edge("gather", END)      # Ask question, then stop
-workflow.add_edge("search", END)      # Show results, then stop
-workflow.add_edge("select_room", END) # Show rooms, then stop
-workflow.add_edge("book", END)        # Show receipt, then stop
+workflow.add_edge("gather", END)
+workflow.add_edge("search", END)
+workflow.add_edge("select_room", END)
+workflow.add_edge("book", END)
 
 memory = MemorySaver()
 workflow_app = workflow.compile(checkpointer=memory)
