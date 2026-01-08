@@ -79,9 +79,19 @@ def parse_intent(state: AgentState):
     updates = {}
     text = last_user_msg.lower()
 
+    # --- CRITICAL FIX: "Blind" Destination Capture ---
+    # If we don't have a destination yet, and this is likely the first user input,
+    # assume the input IS the destination (e.g., "Nigeria").
+    if not state.get("destination"):
+        # If the AI hasn't explicitly asked yet (empty history) OR asked about location
+        if not last_ai_msg or "city" in last_ai_msg.lower() or "country" in last_ai_msg.lower():
+            # Filter out generic greetings
+            if text not in ["hi", "hello", "hey", "start", "restart"]:
+                updates["destination"] = last_user_msg.title()
+
     # --- Context-Aware Extraction ---
     
-    # 1. Answering Destination?
+    # 1. Answering Destination? (Explicit context check)
     if "where would you like to go" in last_ai_msg.lower() or "city or country" in last_ai_msg.lower():
         updates["destination"] = last_user_msg.title()
     
@@ -122,7 +132,7 @@ def parse_intent(state: AgentState):
             updates["final_room_type"] = options[0]["type"]
             updates["final_price"] = options[0]["price"]
 
-    # Initial Prompt Extraction (if starting new)
+    # Initial Prompt Extraction (fallback)
     if not state.get("destination") and not updates.get("destination"):
         if " in " in text:
             try: updates["destination"] = text.split(" in ")[1].strip("?.").title()
