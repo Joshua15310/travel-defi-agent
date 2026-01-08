@@ -48,7 +48,6 @@ def parse_date(text: str) -> str:
         return datetime.strptime(text.strip(), "%Y-%m-%d").strftime("%Y-%m-%d")
     except:
         # Fallback: if user says "20", assume "2026-01-20" (Demo logic)
-        # For production, you'd want a robust library like dateparser
         if "jan" in text.lower(): return "2026-01-20"
         if "feb" in text.lower(): return "2026-02-10"
         return (date.today() + timedelta(days=1)).strftime("%Y-%m-%d") # Default tomorrow
@@ -80,14 +79,12 @@ def parse_intent(state: AgentState):
     text = last_user_msg.lower()
 
     # --- CRITICAL FIX: "Blind" Destination Capture ---
-    # If we don't have a destination yet, and this is likely the first user input,
-    # assume the input IS the destination (e.g., "Nigeria").
+    # If we don't have a destination yet, assume the user's input IS the destination.
+    # This catches "Lagos", "Nigeria", "Berlin" even without "in" or "to".
     if not state.get("destination"):
-        # If the AI hasn't explicitly asked yet (empty history) OR asked about location
-        if not last_ai_msg or "city" in last_ai_msg.lower() or "country" in last_ai_msg.lower():
-            # Filter out generic greetings
-            if text not in ["hi", "hello", "hey", "start", "restart"]:
-                updates["destination"] = last_user_msg.title()
+        # Filter out generic greetings so we don't treat "Hi" as a city
+        if text not in ["hi", "hello", "hey", "start", "restart", "menu"]:
+            updates["destination"] = last_user_msg.title()
 
     # --- Context-Aware Extraction ---
     
@@ -98,7 +95,7 @@ def parse_intent(state: AgentState):
     # 2. Answering Dates?
     elif "check-in" in last_ai_msg.lower():
         updates["check_in"] = parse_date(last_user_msg)
-        # Auto-set checkout to +2 days for demo simplicity if not specified
+        # Auto-set checkout to +2 days
         updates["check_out"] = (datetime.strptime(updates["check_in"], "%Y-%m-%d") + timedelta(days=2)).strftime("%Y-%m-%d")
 
     # 3. Answering Guests/Rooms?
@@ -123,16 +120,14 @@ def parse_intent(state: AgentState):
             updates["final_room_type"] = chosen["type"]
             updates["final_price"] = chosen["price"]
         elif "deluxe" in text:
-            # Simple keyword matching
             match = next((r for r in options if "Deluxe" in r["type"]), options[0])
             updates["final_room_type"] = match["type"]
             updates["final_price"] = match["price"]
         else:
-            # Default to first option
             updates["final_room_type"] = options[0]["type"]
             updates["final_price"] = options[0]["price"]
 
-    # Initial Prompt Extraction (fallback)
+    # Initial Prompt Extraction (fallback if blind capture missed it)
     if not state.get("destination") and not updates.get("destination"):
         if " in " in text:
             try: updates["destination"] = text.split(" in ")[1].strip("?.").title()
@@ -208,14 +203,12 @@ def search_hotels(state: AgentState):
         # Parse Results
         for h in data.get("result", [])[:5]:
             name = h.get("hotel_name", "Unknown")
-            # Try to get gross price
             try: price = float(h.get("composite_price_breakdown", {}).get("gross_amount", {}).get("value", 0))
             except: price = 0.0
             
-            # Fallback if price is 0 (some APIs vary)
             if price == 0: price = float(h.get("min_total_price", 150))
             
-            rating = "⭐" * int(round(h.get("review_score", 0)/2)) # Convert 10-scale to 5-stars
+            rating = "⭐" * int(round(h.get("review_score", 0)/2))
             if not rating: rating = "⭐⭐⭐"
             
             hotels.append({"name": name, "price": price, "rating": rating})
