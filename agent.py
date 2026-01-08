@@ -230,17 +230,17 @@ def parse_intent(state: AgentState):
 # --- 4. Node: Gather Requirements ---
 def gather_requirements(state: AgentState):
     if not state.get("destination"):
-        return {"messages": [AIMessage(content="👋 Welcome to Warden Travel! Which City or Country are you visiting?")]}
+        return {"messages": [AIMessage(content="👋 Welcome to Warden Travel! Which **City** or **Country** are you visiting?")]}
     
     if not state.get("check_in"):
-        return {"messages": [AIMessage(content=f"Great, {state['destination']} is beautiful! 📅 When would you like to Check-in? (YYYY-MM-DD) or say 'Monday'")]}
+        return {"messages": [AIMessage(content=f"Great, **{state['destination']}** is beautiful! 📅 When would you like to **Check-in**? (YYYY-MM-DD) or say 'Monday'")]}
     
     if not state.get("guests"):
-        intro = f"The date for {state['destination']} is {state['check_in']}, got it.\n\n" if state.get("date_just_set") else ""
-        return {"messages": [AIMessage(content=f"{intro}👥 How many guests and how many rooms do you need? (e.g. **2 guests 1 room** or **3 guests 3 rooms**)")]}
+        intro = f"The date for **{state['destination']}** is **{state['check_in']}**, got it.\n\n" if state.get("date_just_set") else ""
+        return {"messages": [AIMessage(content=f"{intro}👥 **How many guests** and **how many rooms** do you need? (e.g. **2 guests 1 room** or **3 guests 3 rooms**)")]}
 
     if not state.get("budget_max"):
-        return {"messages": [AIMessage(content="💰 What is your budget per night? (e.g. **$100-$200**, **under $300**, **above $300**, or **no limit**).")]}
+        return {"messages": [AIMessage(content="💰 What is your **budget per night**? (e.g. **$100-$200**, **under $300**, **above $300**, or **no limit**).")]}
 
     return {}
 
