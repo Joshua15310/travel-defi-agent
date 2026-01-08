@@ -235,39 +235,40 @@ def search_hotels(state: AgentState):
     if state.get("hotels"): return {}
     city, checkin, guests = state.get("destination"), state.get("check_in"), state.get("guests", 1)
     b_min, b_max = state.get("budget_min", 0), state.get("budget_max", 20000) 
-    
+    # Retrieve room count, default to 1 if missing
+    rooms = state.get("rooms", 1)
+
     dest_id, dest_type = get_destination_data(city)
     if not dest_id: return {"messages": [AIMessage(content=f"⚠️ Could not find location '{city}'.")]}
     
     url = "https://booking-com.p.rapidapi.com/v1/hotels/search"
+    
+    # --- FIX: ADDED 'locale' AND 'room_number' ---
     params = {
         "dest_id": str(dest_id), 
         "dest_type": dest_type, 
         "checkin_date": checkin, 
         "checkout_date": state["check_out"], 
-        "adults_number": str(guests), 
+        "adults_number": str(guests),
+        "room_number": str(rooms),      # <-- Added required field
         "units": "metric", 
         "filter_by_currency": "USD", 
-        "order_by": "price"
+        "order_by": "price",
+        "locale": "en-us"               # <-- Added required field
     }
     
     try:
-        # --- DEBUG PRINT START ---
         print(f"DEBUG: Searching hotels in {city} (ID: {dest_id})")
-        # --- DEBUG PRINT END ---
-
+        
         r = requests.get(url, headers={"X-RapidAPI-Key": BOOKING_KEY, "X-RapidAPI-Host": "booking-com.p.rapidapi.com"}, params=params, timeout=20)
         
-        # --- DEBUG PRINT START ---
         print(f"DEBUG: API Status Code: {r.status_code}")
         if r.status_code != 200:
             print(f"DEBUG: API Error Response: {r.text}")
             return {"messages": [AIMessage(content=f"⚠️ API Error ({r.status_code}): {r.text[:100]}")]}
-        # --- DEBUG PRINT END ---
 
         raw_data = r.json().get("result", [])[:100]
         
-        # Check if raw_data is empty even on 200 OK
         if not raw_data:
             print(f"DEBUG: API returned 200 OK but 'result' list is empty. Full response: {r.json()}")
 
@@ -301,7 +302,6 @@ def search_hotels(state: AgentState):
 
         # 2. Fallback Case (Found hotels, but all too expensive)
         elif all_parsed_hotels:
-            # Sort by price ascending to find the absolute cheapest
             all_parsed_hotels.sort(key=lambda x: x["price"])
             final_list = all_parsed_hotels[:5]
             min_found = final_list[0]['price']
