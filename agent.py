@@ -227,25 +227,62 @@ def parse_intent(state: AgentState):
     updates["user_query"] = text
     return updates
 
-# --- 4. Node: Gather Requirements ---
+# --- Updated Parser to handle "Between X and Y" ---
+def parse_budget(text: str):
+    text = text.lower().replace("$", "").replace(",", "")
+    updates = {}
+    
+    if "no limit" in text or "unlimited" in text:
+        updates["budget_min"] = 0.0
+        updates["budget_max"] = 20000.0
+        return updates
+
+    # Handles "between 400 and 500" or "400-500"
+    nums = re.findall(r'\d+', text)
+    if len(nums) >= 2:
+        updates["budget_min"] = float(nums[0])
+        updates["budget_max"] = float(nums[1])
+        return updates
+
+    # Handles "under 300"
+    under_match = re.search(r'(?:under|below|less than)\s*(\d+)', text)
+    if under_match:
+        updates["budget_min"] = 0.0
+        updates["budget_max"] = float(under_match.group(1))
+        return updates
+
+    # Handles "above 300"
+    over_match = re.search(r'(?:above|over|more than)\s*(\d+)', text)
+    if over_match:
+        updates["budget_min"] = float(over_match.group(1))
+        updates["budget_max"] = 20000.0
+        return updates
+        
+    # Standalone number
+    if text.strip().isdigit():
+        val = float(text)
+        if val > 30: 
+            updates["budget_min"] = 0.0
+            updates["budget_max"] = val
+            return updates
+
+    return {}
+
+# --- Updated Gather Node with your specific examples ---
 def gather_requirements(state: AgentState):
-    # 1. Destination
     if not state.get("destination"):
         return {"messages": [AIMessage(content="👋 Welcome to Warden Travel! Which City or Country are you visiting?")]}
     
-    # 2. Date
     if not state.get("check_in"):
         return {"messages": [AIMessage(content=f"Great, {state['destination']} is beautiful! 📅 When would you like to Check-in? (YYYY-MM-DD) or say 'Monday'")]}
     
-    # 3. Guests
     if not state.get("guests"):
         intro = f"The date for {state['destination']} is {state['check_in']}, got it.\n\n" if state.get("date_just_set") else ""
-        # Use line breaks instead of bolding for guest examples
-        return {"messages": [AIMessage(content=f"{intro}👥 How many guests and how many rooms do you need?\nExamples:\n- 2 guests 1 room\n- 3 guests 3 rooms")]}
+        return {"messages": [AIMessage(content=f"{intro}👥 How many guests and how many rooms do you need?\n\nExamples:\n- 2 guests 1 room\n- 3 guests 3 rooms")]}
 
-    # 4. Budget - CLEAN PLAIN TEXT VERSION
+    # Your new suggested examples
     if not state.get("budget_max"):
-        return {"messages": [AIMessage(content="💰 What is your budget per night?\n\nExamples:\n- $100 to $200\n- under $300\n- above $300\n- no limit")]}
+        return {"messages": [AIMessage(content="💰 What is your budget per night?\n\nExamples:\n- My budget is between $400 and $500\n- My budget is between $400 to $500\n- My budget is under $300\n- My budget is above $300\n- no limit")]}
 
     return {}
 
@@ -286,17 +323,22 @@ def search_hotels(state: AgentState):
         if not hotels:
             return {"messages": [AIMessage(content=f"😔 Found hotels in {city}, but none matching your budget. Try saying 'Change budget'.")]}
         
-        msg = f"🔎 Found options in {city} for {checkin}:\n\n" + "\n".join([f"{i+1}. {h['name']} - ${h['price']:.2f} {h['rating']}" for i, h in enumerate(hotels)])
-        return {"hotels": hotels, "messages": [AIMessage(content=msg + "\n\nReply with the number to book.")]}
+        # Formatted as a Bulleted List for UI consistency
+        options_list = "\n".join([f"- {i+1}. {h['name']} - ${h['price']:.2f} {h['rating']}" for i, h in enumerate(hotels)])
+        msg = f"🔎 Found options in {city} for {checkin}:\n\n{options_list}\n\nReply with the number to book."
+        return {"hotels": hotels, "messages": [AIMessage(content=msg)]}
     except Exception as e: return {"messages": [AIMessage(content=f"Search Error: {str(e)}")]}
 
-# --- 6. Node: Select Room ---
+# --- 6. Node: Select Room (LIST FIX) ---
 def select_room(state: AgentState):
     if state.get("selected_hotel") and not state.get("room_options"):
         hotel = state["selected_hotel"]
         base = hotel["price"]
         room_options = [{"type": "Standard", "price": base}, {"type": "Deluxe", "price": round(base * 1.3, 2)}]
-        msg = f"For {hotel['name']}, select a room:\n1. Standard - ${base}\n2. Deluxe - ${room_options[1]['price']}\nReply with 1 or 2."
+        
+        # Formatted as a Bulleted List
+        rooms_list = "\n".join([f"- {i+1}. {r['type']} - ${r['price']}" for i, r in enumerate(room_options)])
+        msg = f"For {hotel['name']}, select a room:\n{rooms_list}\n\nReply with 1 or 2."
         return {"room_options": room_options, "messages": [AIMessage(content=msg)]}
     return {}
 
