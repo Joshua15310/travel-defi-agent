@@ -58,7 +58,6 @@ class AgentState(TypedDict, total=False):
 # --- 2. Schema ---
 class TravelIntent(BaseModel):
     destination: Optional[str] = Field(description="City/Country. ONLY if user explicitly names one or asks for a recommendation.")
-    # FIX: Explicit separation between 'more hotels' and 'new city'
     wants_more_hotels: Optional[bool] = Field(description="True if user says 'next', 'more', 'show others' regarding HOTELS.")
     wants_different_city: Optional[bool] = Field(description="True ONLY if user says 'different city', 'somewhere else', 'change location'.")
     info_query: Optional[str] = Field(description="If user asks 'tell me about hotel X' or 'what is London like?'.")
@@ -68,6 +67,8 @@ class TravelIntent(BaseModel):
     guests: Optional[int] = Field(description="Guest count.")
     budget_max: Optional[float] = Field(description="Explicit new budget.")
     currency: Optional[str] = Field(description="Currency code.")
+    # New field to handle "No" responses
+    rejection: Optional[bool] = Field(description="True if user says 'no', 'don't want that', 'back to list'.")
 
 # --- 3. Helpers ---
 def get_llm():
@@ -104,9 +105,12 @@ def get_live_rate(base_currency):
 
 def extract_hotel_selection(text):
     text = text.lower()
+    # Avoid matching dates (e.g. 2024) or currency (400) as choices
+    # Simple heuristic: Look for small numbers or ordinal words
     digit_match = re.search(r"\b(\d+)\b", text)
     if digit_match:
         val = int(digit_match.group(1))
+        # Only treat 1-10 as valid selection indices to avoid confusion with years/budget
         if 1 <= val <= 10: return val - 1
     ordinals = {"first": 0, "second": 1, "third": 2, "fourth": 3, "fifth": 4}
     for word, idx in ordinals.items():
@@ -130,27 +134,30 @@ def parse_intent(state: AgentState):
             "messages": [AIMessage(content="🔄 System reset! Where are we jetting off to next?")]
         }
 
-    # 2. SELECTION CHECK
-    is_selecting_room = state.get("selected_hotel") and state.get("room_options")
-    if state.get("hotels") and not is_selecting_room:
-        selection_idx = extract_hotel_selection(last_msg)
-        if selection_idx is not None and 0 <= selection_idx < len(state["hotels"]):
-            return {"selected_hotel": state["hotels"][selection_idx], "room_options": [], "waiting_for_booking_confirmation": False}
-
-    # 3. LLM EXTRACTION
+    # --- 2. LLM EXTRACTION (MOVED UP) ---
+    # We prioritize the LLM's understanding. If it sees an INFO REQUEST, we do that instead of booking.
     today = date.today().strftime("%Y-%m-%d")
     current_budget = state.get("budget_max", 500)
     llm = get_llm()
     structured_llm = llm.with_structured_output(TravelIntent)
     
-    system_prompt = f"You are Nomad, an intelligent travel assistant. Today: {today}. Extract travel details. Differentiate between 'next hotel page' and 'next city'."
+    system_prompt = f"You are Nomad, an intelligent travel assistant. Today: {today}. Extract travel details. Identify if user is asking for INFO about a hotel vs SELECTING a hotel."
     
     intent_data = {}
     try:
         intent = structured_llm.invoke([SystemMessage(content=system_prompt)] + messages)
         
-        if intent.info_query: return {"info_request": intent.info_query}
+        # PRIORITY 1: Info Request ("Tell me about hotel 4")
+        # If this is detected, we return immediately to skip the selection logic below.
+        if intent.info_query: 
+            return {"info_request": intent.info_query}
 
+        # PRIORITY 2: Rejection ("No", "Back to list")
+        if intent.rejection:
+             # Just reshow the list by keeping current state but clearing specific selection
+             return {"selected_hotel": None, "messages": [AIMessage(content="Okay! Here is the list again. Which one catches your eye?")]}
+
+        # Standard Intent Processing
         if intent.budget_change == "down":
             new_budget = current_budget * 0.75
             intent_data.update({"budget_max": new_budget, "hotel_cursor": 0, "hotels": [], "messages": [AIMessage(content=f"📉 Got it. Looking for deals around {state.get('currency_symbol','$')}{int(new_budget)}...")]})
@@ -158,15 +165,13 @@ def parse_intent(state: AgentState):
             new_budget = current_budget * 1.5
             intent_data.update({"budget_max": new_budget, "hotel_cursor": 0, "hotels": [], "messages": [AIMessage(content=f"💎 Understood. Showing premium options around {state.get('currency_symbol','$')}{int(new_budget)}...")]})
         
-        # --- THE FIX: AMBIGUITY RESOLUTION ---
-        # If user says "next" and we have hotels, assume PAGINATION, not new city.
+        # Pagination vs New City
         is_viewing_hotels = len(state.get("hotels", [])) > 0
         wants_pagination = intent.wants_more_hotels or ("next" in last_msg and is_viewing_hotels and not intent.wants_different_city)
         
         if wants_pagination:
              intent_data.update({"hotel_cursor": state.get("hotel_cursor", 0) + 5, "hotels": [], "selected_hotel": None, "room_options": []})
         
-        # Only switch city if explicitly requested OR we aren't viewing hotels and user asked for recommendation
         elif intent.wants_different_city or (not state.get("destination") and not intent.destination and "pick" in last_msg):
             past_cities = state.get("suggested_cities", [])
             if state.get("destination") and state.get("destination") not in past_cities: past_cities.append(state.get("destination"))
@@ -176,7 +181,6 @@ def parse_intent(state: AgentState):
             else:
                 intent_data["messages"] = [AIMessage(content="I'm out of suggestions! Do you have a city in mind?")]
         
-        # Standard Destination Set
         elif intent.destination:
             intent_data.update({"destination": intent.destination.title(), "hotel_cursor": 0})
 
@@ -189,6 +193,14 @@ def parse_intent(state: AgentState):
             intent_data["currency_symbol"] = {"USD": "$", "GBP": "£", "EUR": "€"}.get(intent.currency.upper(), "$")
 
     except Exception: pass
+
+    # --- 3. SELECTION CHECK (Now runs ONLY if no info request was found) ---
+    is_selecting_room = state.get("selected_hotel") and state.get("room_options")
+    # Only check for numbers if we have hotels AND the LLM didn't find other intents
+    if state.get("hotels") and not is_selecting_room and not intent_data:
+        selection_idx = extract_hotel_selection(last_msg)
+        if selection_idx is not None and 0 <= selection_idx < len(state["hotels"]):
+            return {"selected_hotel": state["hotels"][selection_idx], "room_options": [], "waiting_for_booking_confirmation": False}
 
     # Confirmation Logic
     if state.get("waiting_for_booking_confirmation"):
@@ -221,12 +233,9 @@ def gather_requirements(state: AgentState):
     prompt = f"""
     You are Nomad, a friendly and witty travel concierge.
     Current Context: {current_context}
-    
     You need to ask the user for these missing details: {', '.join(missing)}.
-    
     If 'Destination' is missing and it's the start of the chat, give a warm, short welcome intro before asking.
     If 'Destination' is KNOWN (e.g. London), acknowledge it enthusiastically and ask for the rest.
-    
     Keep it conversational and fun.
     """
     msg = llm.invoke(prompt)
@@ -236,12 +245,22 @@ def consultant_node(state: AgentState):
     query = state.get("info_request")
     if not query: return {}
     context = "\n".join([f"- {h['name']} ({h.get('location','')})" for h in state.get("hotels", [])[:5]])
-    prompt = f"User asks: '{query}'. Context:\n{context}\nAnswer as a knowledgeable local guide. Be witty. End by telling them: 'Reply with *Book the first one* or *Show more* if you're ready!'"
+    # FIX: Explicit prompt to Guide the user to the next step
+    prompt = f"""
+    User asks: '{query}'. 
+    Context of available hotels:\n{context}
+    
+    Answer as a knowledgeable local guide. Be witty.
+    IMPORTANT: End your response by asking: 
+    "Do you want to book this one? Reply 'Yes' to proceed, or 'No' to see the list again."
+    """
     response = get_llm().invoke(prompt)
     return {"info_request": None, "messages": [response]}
 
 def search_hotels(state: AgentState):
     if not state.get("requirements_complete"): return {}
+    # If we selected a hotel (from regex) but then rejected it via "No", we need to clear it.
+    # But usually 'search' runs when we DON'T have a selected_hotel.
     if state.get("selected_hotel"): return {} 
     
     city = state.get("destination")
@@ -303,6 +322,9 @@ def search_hotels(state: AgentState):
     return {"hotels": batch, "messages": [AIMessage(content=intro + msg + outro)]}
 
 def select_room(state: AgentState):
+    # This node is triggered if selected_hotel is SET.
+    # If the user asked for INFO about a hotel, selected_hotel should be None, so we don't get here.
+    
     if state.get("selected_hotel") and not state.get("room_options"):
         h = state["selected_hotel"]
         sym = state.get("currency_symbol", "$")
@@ -364,11 +386,14 @@ Pack your bags! 🎒"""
 def route_step(state):
     if state.get("info_request"): return "consultant"
     if not state.get("requirements_complete"): return "end" 
+    
     if state.get("selected_hotel"): return "select_room"
+    
     if state.get("final_room_type"):
         last = get_message_text(state["messages"][-1]).lower()
         if any(w in last for w in ["yes", "confirm", "proceed", "book", "ok", "do it"]): return "book"
         return "end"
+        
     if not state.get("hotels"): return "search"
     return "select_room"
 
