@@ -4,7 +4,7 @@ import requests
 import time
 import operator
 import hashlib
-import re # Added for smart number extraction
+import re
 from datetime import date, timedelta, datetime
 from typing import TypedDict, List, Optional, Annotated
 
@@ -48,9 +48,7 @@ class AgentState(TypedDict, total=False):
     currency: str          
     currency_symbol: str   
     
-    # Context for "Tell me about..."
     info_request: str      
-    
     hotel_cursor: int      
     hotels: List[dict]     
     
@@ -118,19 +116,15 @@ def extract_hotel_selection(text):
     Returns: Index (0-based) or None.
     """
     text = text.lower()
-    
     # 1. Direct digit match "hotel 3", "option 2", just "1"
     digit_match = re.search(r"\b(\d+)\b", text)
     if digit_match:
         val = int(digit_match.group(1))
         if 1 <= val <= 10: return val - 1
-        
     # 2. Ordinal match "third one", "first hotel"
     ordinals = {"first": 0, "second": 1, "third": 2, "fourth": 3, "fifth": 4}
     for word, idx in ordinals.items():
-        if word in text:
-            return idx
-            
+        if word in text: return idx
     return None
 
 # --- 4. Node: Intelligent Intent Parser ---
@@ -149,6 +143,14 @@ def parse_intent(state: AgentState):
             "messages": [AIMessage(content="🔄 System reset. Where are we going next?")]
         }
 
+    # 2. PRIORITY: Check for Selection BEFORE calling LLM
+    # This fixes "Book the third hotel" being ignored
+    is_selecting_room = state.get("selected_hotel") and state.get("room_options")
+    if state.get("hotels") and not is_selecting_room:
+        selection_idx = extract_hotel_selection(last_msg)
+        if selection_idx is not None and 0 <= selection_idx < len(state["hotels"]):
+            return {"selected_hotel": state["hotels"][selection_idx], "room_options": [], "waiting_for_booking_confirmation": False}
+
     today = date.today().strftime("%Y-%m-%d")
     current_budget = state.get("budget_max", 500)
     
@@ -164,15 +166,6 @@ def parse_intent(state: AgentState):
     """
     
     intent_data = {}
-    
-    # --- Priority Check: Hotel Selection (The Fix) ---
-    # We check this BEFORE calling LLM to catch "book the third one"
-    is_selecting_room = state.get("selected_hotel") and state.get("room_options")
-    if state.get("hotels") and not is_selecting_room:
-        selection_idx = extract_hotel_selection(last_msg)
-        if selection_idx is not None and 0 <= selection_idx < len(state["hotels"]):
-            return {"selected_hotel": state["hotels"][selection_idx], "room_options": [], "waiting_for_booking_confirmation": False}
-
     try:
         intent: TravelIntent = structured_llm.invoke([SystemMessage(content=system_prompt)] + messages)
         
@@ -227,8 +220,7 @@ def parse_intent(state: AgentState):
         if intent.currency:
             curr = intent.currency.upper()
             intent_data["currency"] = curr
-            symbols = {"USD": "$", "GBP": "£", "EUR": "€", "NGN": "₦"}
-            intent_data["currency_symbol"] = symbols.get(curr, curr + " ")
+            intent_data["currency_symbol"] = {"USD": "$", "GBP": "£", "EUR": "€"}.get(curr, curr + " ")
 
     except Exception as e: print(f"LLM Error: {e}")
 
@@ -241,9 +233,9 @@ def parse_intent(state: AgentState):
             updates["final_room_type"] = None 
             updates["messages"] = [AIMessage(content=f"🗓️ Dates updated. Please re-select your room.")]
             return updates
-        return {"waiting_for_booking_confirmation": False, "room_options": [], "messages": [AIMessage(content="🚫 Booking cancelled. Please select a hotel number again.")]}
+        return {"waiting_for_booking_confirmation": False, "room_options": [], "messages": [AIMessage(content="🚫 Booking cancelled.")]}
 
-    # Pagination (Explicit "More" check)
+    # Pagination
     if any(w in last_msg for w in ["more", "next", "other hotels"]) and not intent.wants_different_city and not intent.budget_change:
         current_cursor = state.get("hotel_cursor", 0)
         return {"hotel_cursor": current_cursor + 5, "hotels": [], "selected_hotel": None, "room_options": []}
@@ -277,16 +269,15 @@ def gather_requirements(state: AgentState):
     response = chain.invoke({"missing_fields": ", ".join(missing), "messages": state.get("messages", [])})
     return {"requirements_complete": False, "messages": [response]}
 
-# --- 6. Node: Consultant (The Info Bot) ---
+# --- 6. Node: Consultant (Info Bot) ---
 def consultant_node(state: AgentState):
-    """Handles questions about hotels or cities without breaking flow."""
     query = state.get("info_request")
     if not query: return {}
     
-    # Provide context to LLM
     context_hotels = "\n".join([f"- {h['name']} in {h.get('location', 'Unknown')}" for h in state.get("hotels", [])[:5]])
     current_city = state.get("destination", "the destination")
     
+    # UPGRADE: Added explicit booking instructions
     prompt = f"""
     User is asking: "{query}"
     Context:
@@ -294,17 +285,16 @@ def consultant_node(state: AgentState):
     Available Hotels:
     {context_hotels}
     
-    Answer the user concisely. If asking about a specific hotel, mention its key features. If asking about the city, describe the vibe.
-    After answering, remind them they can reply with "Book hotel 1", "Show more", or "Next city".
+    Answer the user concisely. 
+    IMPORTANT: End your response by telling them:
+    "If you'd like to book one of these, just reply with 'Book the first one', 'Select option 3', or 'Yes, proceed with booking'!"
     """
     
     llm = get_llm()
     response = llm.invoke(prompt)
-    
-    # Clear request so we don't loop
     return {"info_request": None, "messages": [response]}
 
-# --- 7. Node: Search Hotels (With Location) ---
+# --- 7. Node: Search Hotels ---
 def _fetch_hotels_raw(city, check_in, check_out, guests, rooms, currency):
     cache_key = generate_cache_key(city, check_in, guests, currency)
     cached_entry = HOTEL_CACHE.get(cache_key)
@@ -357,7 +347,6 @@ def search_hotels(state: AgentState):
             price_per_night = round(total_price / nights, 2)
             stars = int(h.get("class", 0))
             star_str = "⭐" * stars if stars > 0 else f"Rating: {h.get('review_score', 'N/A')}"
-            
             loc_city = h.get("city_trans", city)
             loc_country = h.get("country_trans", "")
             location_str = f"{loc_city}, {loc_country}" if loc_country else loc_city
@@ -417,7 +406,6 @@ def select_room(state: AgentState):
     options = state.get("room_options", [])
     
     selected_room = None
-    # Use helper again for room selection "first room", "option 1"
     idx = extract_hotel_selection(last_msg)
     if idx is not None and 0 <= idx < len(options):
         selected_room = options[idx]
@@ -434,8 +422,6 @@ def select_room(state: AgentState):
         local_total = selected_room["price"] * nights
         currency = state.get("currency", "USD")
         sym = state.get("currency_symbol", "$")
-        
-        # PRICE LOCK
         rate = get_live_rate(currency)
         usd_total = local_total * rate
         
@@ -488,21 +474,32 @@ def book_hotel(state: AgentState):
 Safe travels! ✈️"""
     return {"final_status": "Booked", "waiting_for_booking_confirmation": False, "messages": [AIMessage(content=msg)]}
 
-# --- 10. Routing ---
+# --- 10. Routing (FIXED) ---
 def route_step(state):
-    if state.get("info_request"): return "consultant" 
+    # 1. Consultant Mode Priority
+    if state.get("info_request"): return "consultant"
+    
+    # 2. Gather Requirements
     if not state.get("requirements_complete"): return "gather"
+    
+    # 3. IF SELECTION EXISTS -> GO TO ROOMS (Skips search loop)
+    if state.get("selected_hotel"): return "select_room"
+    
+    # 4. If no hotels, search
     if not state.get("hotels"): return "search"
-    if not state.get("selected_hotel"): return "end"
+    
+    # 5. Final Booking Check
     if state.get("final_room_type"):
         if state.get("waiting_for_booking_confirmation"):
             last_msg = get_message_text(state["messages"][-1]).lower()
             if any(w in last_msg for w in ["yes", "proceed", "confirm", "book", "ok", "do it"]): return "book"
             else: return "end"
         else: return "select_room"
+        
     return "select_room"
 
 def gather_router(state):
+    # FIX: Use the main router to check for selections too
     if state.get("requirements_complete"): return "search"
     return "end"
 
@@ -513,7 +510,11 @@ workflow.add_node("book", book_hotel); workflow.add_node("consultant", consultan
 
 workflow.set_entry_point("parse")
 workflow.add_edge("parse", "gather")
-workflow.add_conditional_edges("gather", gather_router, {"search": "search", "end": END})
+# CRITICAL FIX: The gather node now uses the FULL ROUTER logic
+workflow.add_conditional_edges("gather", route_step, {
+    "gather": "gather", "search": "search", "select_room": "select_room", 
+    "consultant": "consultant", "book": "book", "end": END
+})
 workflow.add_conditional_edges("search", lambda x: "end", {"end": END})
 workflow.add_edge("consultant", END)
 workflow.add_conditional_edges("select_room", lambda x: END, {"end": END})
