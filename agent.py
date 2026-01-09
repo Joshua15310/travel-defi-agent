@@ -123,7 +123,6 @@ def parse_intent(state: AgentState):
     llm = get_llm()
     structured_llm = llm.with_structured_output(TravelIntent)
     
-    # We pass current dates so LLM can calculate relative changes (e.g. "add 2 days")
     system_prompt = f"""
     You are an intelligent travel assistant. Today is {today}.
     Current Itinerary: {current_checkin} to {current_checkout}.
@@ -152,30 +151,32 @@ def parse_intent(state: AgentState):
 
     # 3. Handle Confirmation State
     if state.get("waiting_for_booking_confirmation"):
-        # A. Check for Confirmation
         if any(w in last_msg for w in ["yes", "proceed", "confirm", "book", "pay"]):
              return {} # Proceed to book_hotel
         
-        # B. Check for Date/Requirement Changes (The Fix)
+        # Check for Date/Requirement Changes
         if intent_data.get("check_in") or intent_data.get("check_out"):
-            # Update dates, Reset Confirmation, and Force Room Re-selection
             updates = intent_data
             updates["waiting_for_booking_confirmation"] = False
-            updates["final_room_type"] = None # Reset room to force re-pricing
-            updates["messages"] = [AIMessage(content=f"🗓️ I've updated your dates ({updates.get('check_in', current_checkin)} to {updates.get('check_out', current_checkout)}). Please select your room again to see the updated price.")]
+            updates["final_room_type"] = None 
+            updates["messages"] = [AIMessage(content=f"🗓️ I've updated your dates. Please re-select your room.")]
             return updates
 
-        # C. Else: Cancel
         return {
             "waiting_for_booking_confirmation": False, 
             "room_options": [], 
             "messages": [AIMessage(content="🚫 Booking cancelled. Please select a hotel number again.")]
         }
 
-    # 4. Pagination
+    # 4. Pagination (THE FIX: Clear 'hotels' list)
     if any(w in last_msg for w in ["more", "next", "other", "fancier", "cheaper"]):
         current_cursor = state.get("hotel_cursor", 0)
-        return {"hotel_cursor": current_cursor + 5, "selected_hotel": None, "room_options": []}
+        return {
+            "hotel_cursor": current_cursor + 5, 
+            "hotels": [],        # <--- CRITICAL FIX: Forces Router to trigger 'search'
+            "selected_hotel": None, 
+            "room_options": []
+        }
 
     # 5. Hotel Selection
     is_selecting_room = state.get("selected_hotel") and state.get("room_options")
@@ -186,10 +187,8 @@ def parse_intent(state: AgentState):
 
     # 6. Apply Standard Updates
     updates = intent_data
-    # Reset cursor if destination changes
     if updates.get("destination"): updates["hotel_cursor"] = 0
     
-    # Auto-fill checkout if missing
     if updates.get("check_in") and not updates.get("check_out") and not state.get("check_out"):
          try:
             dt = datetime.strptime(updates["check_in"], "%Y-%m-%d")
@@ -308,9 +307,8 @@ def search_hotels(state: AgentState):
     msg = f"{msg_intro}\n\n{options}\n\nReply with the number to book." if cursor == 0 else f"Here are **5 more options**:\n\n{options}\n\nReply with the number to book."
     return {"hotels": batch, "messages": [AIMessage(content=msg)]}
 
-# --- 7. Node: Select Room (Fix: Detailed Date & Re-entry) ---
+# --- 7. Node: Select Room ---
 def select_room(state: AgentState):
-    # Case A: Show Options
     if state.get("selected_hotel") and not state.get("room_options"):
         h = state["selected_hotel"]
         sym = state.get("currency_symbol", "$")
@@ -322,7 +320,6 @@ def select_room(state: AgentState):
         msg = f"Great! For **{h['name']}**, please choose a room:\n\n{rooms_list}\n\nReply with '1' or '2'."
         return {"room_options": room_options, "messages": [AIMessage(content=msg)]}
     
-    # Case B: Parse & Convert
     last_msg = get_message_text(state["messages"][-1]).lower()
     options = state.get("room_options", [])
     
@@ -346,7 +343,6 @@ def select_room(state: AgentState):
         rate = FX_RATES.get(currency, 1.0)
         usd_total = local_total * rate
         
-        # --- FIXED SUMMARY FORMAT ---
         msg = f"""Summary of your trip:
         
 🏨 **Hotel:** {state['selected_hotel']['name']}
@@ -404,7 +400,7 @@ def route_step(state):
         if state.get("waiting_for_booking_confirmation"):
             last_msg = get_message_text(state["messages"][-1]).lower()
             if any(w in last_msg for w in ["yes", "proceed", "confirm", "ok", "do it"]): return "book"
-            else: return "end" # Waits for user input (cancel or date change)
+            else: return "end"
         else: return "select_room"
             
     return "select_room"
