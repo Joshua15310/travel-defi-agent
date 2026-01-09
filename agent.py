@@ -387,6 +387,19 @@ def select_room(state: AgentState):
         return {"room_options": room_options, "messages": [AIMessage(content=msg)]}
     return {}
 
+# --- UPGRADE #2: SAFETY GUARDRAILS ---
+def validate_booking(state: AgentState):
+    current_price = state.get("final_price", 0)
+    max_budget = state.get("budget_max", 0)
+    check_in_str = state.get("check_in")
+    if max_budget and current_price > (max_budget * 1.15):
+        return {"messages": [AIMessage(content=f"⚠️ Price Alert: Current price (\${current_price}) is over your budget. Please select another room.")]}
+    try:
+        if datetime.strptime(check_in_str, "%Y-%m-%d").date() < date.today():
+            return {"messages": [AIMessage(content="⚠️ Date Error: Check-in is in the past.")]}
+    except: pass
+    return {}
+
 def book_hotel(state: AgentState):
     if not state.get("final_room_type"): return {}
     
