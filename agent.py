@@ -40,7 +40,7 @@ class AgentState(TypedDict, total=False):
     budget_min: float
     hotels: List[dict]
     selected_hotel: dict
-    room_options: List[dict] # <--- This caused the bug. We must clear it!
+    room_options: List[dict] 
     final_room_type: str
     final_price_per_night: float
     final_total_price: float 
@@ -114,18 +114,21 @@ def parse_intent(state: AgentState):
         else:
             return {
                 "waiting_for_booking_confirmation": False, 
-                "room_options": [], # Clear options so we don't get stuck loop
+                "room_options": [], 
                 "messages": [AIMessage(content="🚫 Booking cancelled. Please select a hotel number again.")]
             }
 
-    # HOTEL SELECTION DETECTOR (The Fix)
-    # If user types a number AND we have a hotel list, assume it's a hotel selection first.
-    if state.get("hotels") and last_msg.strip().isdigit():
+    # --- HOTEL SELECTION LOGIC (The Collision Fix) ---
+    # We only treat a number as a "Hotel Selection" if we are NOT already looking at rooms.
+    # If room_options is populated, the user is picking a room, so we SKIP this block.
+    is_selecting_room = state.get("selected_hotel") and state.get("room_options")
+    
+    if state.get("hotels") and not is_selecting_room and last_msg.strip().isdigit():
         idx = int(last_msg) - 1
         if 0 <= idx < len(state["hotels"]):
             return {
                 "selected_hotel": state["hotels"][idx],
-                "room_options": [], # <--- CRITICAL FIX: Clear old room options
+                "room_options": [], # Clear old options for safety
                 "final_room_type": None,
                 "waiting_for_booking_confirmation": False
             }
@@ -225,8 +228,9 @@ def _fetch_hotels_from_api(city, check_in, check_out, guests, rooms):
 
 def search_hotels(state: AgentState):
     if not state.get("requirements_complete"): return {}
-    # Only search if we don't have hotels OR if the destination changed
-    if state.get("hotels") and not state.get("selected_hotel"): return {} 
+    # Stop redundant searching if we already have a selected hotel and haven't reset
+    if state.get("selected_hotel"): return {} 
+    if state.get("hotels"): return {} 
     
     city = state.get("destination")
     rooms = state.get("rooms", 1)
@@ -286,7 +290,7 @@ def search_hotels(state: AgentState):
 
 # --- 7. Node: Select Room & Calculate Total ---
 def select_room(state: AgentState):
-    # Case A: Present Options (Hotel selected, BUT room_options is empty/cleared)
+    # Case A: Present Options (Hotel selected, BUT room_options is empty)
     if state.get("selected_hotel") and not state.get("room_options"):
         h = state["selected_hotel"]
         room_options = [
@@ -297,7 +301,7 @@ def select_room(state: AgentState):
         msg = f"Great! For **{h['name']}**, please choose a room:\n\n{rooms_list}\n\nReply with '1' or '2'."
         return {"room_options": room_options, "messages": [AIMessage(content=msg)]}
     
-    # Case B: Parse Selection & Ask for Payment Confirmation
+    # Case B: Parse Selection
     last_msg = get_message_text(state["messages"][-1]).lower()
     options = state.get("room_options", [])
     
@@ -371,15 +375,16 @@ def route_step(state):
     if not state.get("hotels"): return "search"
     if not state.get("selected_hotel"): return "end"
     
+    # If a room type is selected, we are in confirmation mode
     if state.get("final_room_type"):
         if state.get("waiting_for_booking_confirmation"):
             last_msg = get_message_text(state["messages"][-1]).lower()
             if any(w in last_msg for w in ["yes", "proceed", "confirm", "ok", "do it"]):
                 return "book"
             else:
-                return "end"
+                return "end" # Wait for confirmation
         else:
-            return "select_room"
+            return "select_room" # Should have been cleared, but safety fallback
             
     return "select_room"
 
