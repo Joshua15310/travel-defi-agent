@@ -4,6 +4,7 @@ import requests
 import random
 import operator
 import re
+import time
 from dotenv import load_dotenv
 from datetime import date, timedelta, datetime
 from typing import TypedDict, List, Union, Optional, Annotated
@@ -311,7 +312,21 @@ def search_hotels(state: AgentState):
         "order_by": "price",
         "locale": "en-us"
     }
-    
+
+# --- UPGRADE #1: RETRY LOGIC ---
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            r = requests.get(url, headers={"X-RapidAPI-Key": BOOKING_KEY, "X-RapidAPI-Host": "booking-com.p.rapidapi.com"}, params=params, timeout=20)
+            r.raise_for_status() # This triggers the 'except' block if the API returns an error
+            raw_data = r.json().get("result", [])[:100]
+            break # Success! Exit the retry loop
+        except (requests.exceptions.RequestException, ValueError) as e:
+            if attempt < max_retries - 1:
+                time.sleep(2) # Wait 2 seconds before the next attempt
+                continue
+            return {"messages": [AIMessage(content="😔 The hotel service is temporarily unresponsive. Please try again in a few seconds.")]}
+        
     try:
         r = requests.get(url, headers={"X-RapidAPI-Key": BOOKING_KEY, "X-RapidAPI-Host": "booking-com.p.rapidapi.com"}, params=params, timeout=20)
         raw_data = r.json().get("result", [])[:100]
