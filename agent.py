@@ -30,12 +30,13 @@ LLM_BASE_URL = "https://api.x.ai/v1"
 LLM_API_KEY = os.getenv("GROK_API_KEY") or os.getenv("OPENAI_API_KEY")
 LLM_MODEL = "grok-3" if os.getenv("GROK_API_KEY") else "gpt-4o-mini"
 
-# Demo Exchange Rates
-FX_RATES = {"GBP": 1.28, "EUR": 1.08, "USD": 1.0, "CAD": 0.74, "NGN": 0.00065}
+# Fallback Rates (Used if API fails)
+FX_RATES_FALLBACK = {"GBP": 1.28, "EUR": 1.08, "USD": 1.0, "CAD": 0.74, "NGN": 0.00065}
 
-# --- GLOBAL CACHE ---
+# --- GLOBAL CACHE (The Speed Layer) ---
+# Stores search results: { "hash_key": { "timestamp": 12345, "data": [...] } }
 HOTEL_CACHE = {}
-CACHE_TTL = 3600
+CACHE_TTL = 3600  # 1 Hour
 
 # --- 1. State Definition ---
 class AgentState(TypedDict, total=False):
@@ -49,7 +50,7 @@ class AgentState(TypedDict, total=False):
     currency: str          
     currency_symbol: str   
     
-    # Cache & Pagination
+    # Cache & Pagination State
     hotel_cursor: int      
     hotels: List[dict]     
     
@@ -98,6 +99,27 @@ def generate_cache_key(city, check_in, guests, currency):
     raw = f"{city}|{check_in}|{guests}|{currency}".lower()
     return hashlib.md5(raw.encode()).hexdigest()
 
+def get_live_rate(base_currency):
+    """Fetches real-time rate from CoinGecko API. Returns USDC amount per 1 Unit of base_currency."""
+    base = base_currency.upper()
+    if base == "USD": return 1.0
+    if base == "USDC": return 1.0
+    
+    try:
+        # CoinGecko API: Get price of USDC in 'base_currency' (e.g. GBP)
+        # We need the inverse: How many USDC is 1 GBP?
+        url = f"https://api.coingecko.com/api/v3/simple/price?ids=usd-coin&vs_currencies={base.lower()}"
+        response = requests.get(url, timeout=3).json()
+        
+        # Example: 1 USDC = 0.78 GBP
+        rate_usdc_in_base = response['usd-coin'][base.lower()]
+        
+        # Inverse: 1 GBP = 1 / 0.78 USDC = 1.28 USDC
+        return 1.0 / rate_usdc_in_base
+    except Exception as e:
+        print(f"⚠️ API Rate Error: {e}. Using fallback.")
+        return FX_RATES_FALLBACK.get(base, 1.0)
+
 # --- 4. Node: Intelligent Intent Parser ---
 def parse_intent(state: AgentState):
     messages = state.get("messages", [])
@@ -115,7 +137,7 @@ def parse_intent(state: AgentState):
             "messages": [AIMessage(content="🔄 System reset. Where are we going next?")]
         }
 
-    # 2. Extract Intent (ALWAYS run this to catch date changes)
+    # 2. Extract Intent (ALWAYS run to catch dates)
     today = date.today().strftime("%Y-%m-%d")
     current_checkin = state.get("check_in", "Not set")
     current_checkout = state.get("check_out", "Not set")
@@ -126,10 +148,9 @@ def parse_intent(state: AgentState):
     system_prompt = f"""
     You are an intelligent travel assistant. Today is {today}.
     Current Itinerary: {current_checkin} to {current_checkout}.
-    
     RULES:
     1. Extract destination, dates, guests.
-    2. If user says "add 2 days" or "extend", calculate new check_out based on Current Itinerary.
+    2. If user says "add 2 days" or "extend", calculate new check_out.
     3. Extract CURRENCY (e.g. "400 pounds" -> GBP).
     """
     
@@ -152,9 +173,9 @@ def parse_intent(state: AgentState):
     # 3. Handle Confirmation State
     if state.get("waiting_for_booking_confirmation"):
         if any(w in last_msg for w in ["yes", "proceed", "confirm", "book", "pay"]):
-             return {} # Proceed to book_hotel
+             return {} 
         
-        # Check for Date/Requirement Changes
+        # Check for Date/Requirement Changes (Smart Amendment)
         if intent_data.get("check_in") or intent_data.get("check_out"):
             updates = intent_data
             updates["waiting_for_booking_confirmation"] = False
@@ -168,12 +189,12 @@ def parse_intent(state: AgentState):
             "messages": [AIMessage(content="🚫 Booking cancelled. Please select a hotel number again.")]
         }
 
-    # 4. Pagination (THE FIX: Clear 'hotels' list)
+    # 4. Pagination (Clears list to force re-search)
     if any(w in last_msg for w in ["more", "next", "other", "fancier", "cheaper"]):
         current_cursor = state.get("hotel_cursor", 0)
         return {
             "hotel_cursor": current_cursor + 5, 
-            "hotels": [],        # <--- CRITICAL FIX: Forces Router to trigger 'search'
+            "hotels": [], 
             "selected_hotel": None, 
             "room_options": []
         }
@@ -188,7 +209,6 @@ def parse_intent(state: AgentState):
     # 6. Apply Standard Updates
     updates = intent_data
     if updates.get("destination"): updates["hotel_cursor"] = 0
-    
     if updates.get("check_in") and not updates.get("check_out") and not state.get("check_out"):
          try:
             dt = datetime.strptime(updates["check_in"], "%Y-%m-%d")
@@ -307,7 +327,7 @@ def search_hotels(state: AgentState):
     msg = f"{msg_intro}\n\n{options}\n\nReply with the number to book." if cursor == 0 else f"Here are **5 more options**:\n\n{options}\n\nReply with the number to book."
     return {"hotels": batch, "messages": [AIMessage(content=msg)]}
 
-# --- 7. Node: Select Room ---
+# --- 7. Node: Select Room (Live Rate & ID Prep) ---
 def select_room(state: AgentState):
     if state.get("selected_hotel") and not state.get("room_options"):
         h = state["selected_hotel"]
@@ -340,7 +360,9 @@ def select_room(state: AgentState):
         local_total = selected_room["price"] * nights
         currency = state.get("currency", "USD")
         sym = state.get("currency_symbol", "$")
-        rate = FX_RATES.get(currency, 1.0)
+        
+        # --- LIVE RATE FETCHING ---
+        rate = get_live_rate(currency)
         usd_total = local_total * rate
         
         msg = f"""Summary of your trip:
@@ -352,7 +374,7 @@ def select_room(state: AgentState):
 
 🔄 **Payment:**
 We process payments in **USDC on Base**.
-Rate: 1 {currency} ≈ {rate} USDC
+Rate: 1 {currency} ≈ {rate:.4f} USDC
 **TOTAL TO PAY:** {usd_total:.2f} USDC
 
 Reply 'Yes' or 'Confirm' to execute the booking.
@@ -368,18 +390,22 @@ Reply 'Yes' or 'Confirm' to execute the booking.
 
     return {"messages": [AIMessage(content="⚠️ Please reply '1' for Standard or '2' for Suite.")]}
 
-# --- 8. Node: Book Hotel ---
+# --- 8. Node: Book Hotel (Returns Booking ID) ---
 def book_hotel(state: AgentState):
     if not state.get("waiting_for_booking_confirmation"): return {}
     
     details = f"{state['selected_hotel']['name']} ({state['final_room_type']}) [Chain: Base | Token: USDC]"
     res = warden_client.submit_booking(details, state["final_total_price_usd"], state["destination"], 0.0)
+    
+    # Extract IDs (Simulated for Mock, Real for Prod)
     tx = res.get("tx_hash", "0xMOCK")
+    booking_id = res.get("booking_ref", f"BK-{tx[-6:].upper()}")
     
     sym = state.get("currency_symbol", "$")
     msg = f"""✅ Success! Your trip is booked.
 
 🏨 **Hotel:** {state['selected_hotel']['name']}
+🆔 **Booking ID:** {booking_id}
 💰 **Paid:** {state['final_total_price_usd']:.2f} USDC
 (Approx {sym}{state['final_total_price_local']:.2f})
 
