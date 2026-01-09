@@ -67,12 +67,8 @@ def get_llm():
     )
 
 def get_message_text(msg):
-    """
-    Robustly extracts text from Dicts, Objects, or Multimodal Lists.
-    Fixes 'list object has no attribute lower' error.
-    """
+    """Safely extracts text from Dicts, Objects, or Multimodal Lists."""
     content = ""
-    # 1. Extract raw content from object or dict
     if hasattr(msg, 'content'):
         content = msg.content
     elif isinstance(msg, dict):
@@ -80,7 +76,6 @@ def get_message_text(msg):
     else:
         content = str(msg)
     
-    # 2. Handle Multimodal List (e.g. Vercel/OpenAI format)
     if isinstance(content, list):
         text_parts = []
         for part in content:
@@ -89,7 +84,6 @@ def get_message_text(msg):
             elif isinstance(part, dict) and "text" in part:
                 text_parts.append(str(part["text"]))
         return " ".join(text_parts)
-    
     return str(content)
 
 # --- 4. Node: Intelligent Intent Parser ---
@@ -97,7 +91,6 @@ def parse_intent(state: AgentState):
     messages = state.get("messages", [])
     if not messages: return {}
     
-    # FIX: Use robust helper to safely get text
     last_msg = get_message_text(messages[-1]).lower()
     
     if "start over" in last_msg or "reset" in last_msg:
@@ -107,7 +100,6 @@ def parse_intent(state: AgentState):
             "messages": [AIMessage(content="🔄 System reset. Where are we going next?")]
         }
 
-    # Prepare Prompt
     today = date.today().strftime("%Y-%m-%d")
     llm = get_llm()
     structured_llm = llm.with_structured_output(TravelIntent)
@@ -118,7 +110,6 @@ def parse_intent(state: AgentState):
     """
     
     try:
-        # ChatOpenAI handles dicts in messages automatically
         intent: TravelIntent = structured_llm.invoke([SystemMessage(content=system_prompt)] + messages)
         
         updates = {}
@@ -132,7 +123,6 @@ def parse_intent(state: AgentState):
         if intent.guests: updates["guests"] = intent.guests
         if intent.budget_max: updates["budget_max"] = intent.budget_max
         
-        # Handle manual hotel selection by number
         if state.get("hotels") and last_msg.strip().isdigit():
             idx = int(last_msg) - 1
             if 0 <= idx < len(state["hotels"]):
@@ -169,38 +159,25 @@ def gather_requirements(state: AgentState):
     
     return {"requirements_complete": False, "messages": [response]}
 
-# --- 6. Node: Search Hotels (Logic Fixed with Soft Fallback) ---
-def search_hotels(state: AgentState):
-    if not state.get("requirements_complete"): return {}
-    if state.get("hotels"): return {} 
-    
-    city = state.get("destination")
-    print(f"🔎 Searching for hotels in {city}...")
-    
-    # Calculate number of nights for accurate pricing
-    try:
-        d1 = datetime.strptime(state["check_in"], "%Y-%m-%d")
-        d2 = datetime.strptime(state["check_out"], "%Y-%m-%d")
-        nights = max(1, (d2 - d1).days)
-    except:
-        nights = 1
-
+# --- 6. Node: Search Hotels (With Smart Pivot) ---
+def _fetch_hotels_from_api(city, check_in, check_out, guests):
+    """Helper function to execute raw API search logic."""
     try:
         headers = {"X-RapidAPI-Key": BOOKING_KEY, "X-RapidAPI-Host": "booking-com.p.rapidapi.com"}
         
-        # 1. Get Location
+        # 1. Get Location ID
         r = requests.get("https://booking-com.p.rapidapi.com/v1/hotels/locations", 
                         headers=headers, params={"name": city, "locale": "en-us"}, timeout=10)
         data = r.json()
-        if not data: return {"messages": [AIMessage(content=f"⚠️ I couldn't find '{city}'.")]}
+        if not data: return []
         
         dest_id, dest_type = data[0].get("dest_id"), data[0].get("dest_type")
 
         # 2. Search (with Retry)
         params = {
             "dest_id": dest_id, "dest_type": dest_type,
-            "checkin_date": state["check_in"], "checkout_date": state["check_out"],
-            "adults_number": str(state["guests"]), "units": "metric", 
+            "checkin_date": check_in, "checkout_date": check_out,
+            "adults_number": str(guests), "units": "metric", 
             "filter_by_currency": "USD", "order_by": "price", "locale": "en-us"
         }
         
@@ -210,58 +187,88 @@ def search_hotels(state: AgentState):
                 r = requests.get("https://booking-com.p.rapidapi.com/v1/hotels/search", 
                                 headers=headers, params=params, timeout=15)
                 r.raise_for_status()
-                raw_data = r.json().get("result", [])[:15] # Fetch a few more to filter
+                raw_data = r.json().get("result", [])[:15]
                 break
             except:
                 if attempt < 2: time.sleep(2)
         
-        # 3. Smart Filtering
-        all_hotels = []
-        for h in raw_data:
-            try: 
-                total_price = float(h.get("min_total_price", 0))
-                if total_price == 0: continue # Skip invalid data
-                
-                # Calculate nightly price
-                price_per_night = round(total_price / nights, 2)
-                
-                hotel_obj = {
-                    "name": h.get("hotel_name"), 
-                    "price": price_per_night, # We store the NIGHTLY price
-                    "total": total_price,
-                    "rating": h.get("review_score", "N/A")
-                }
-                all_hotels.append(hotel_obj)
-            except: pass
-        
-        # Sort by price (cheapest first)
-        all_hotels.sort(key=lambda x: x["price"])
+        return raw_data
+    except Exception as e:
+        print(f"API Error for {city}: {e}")
+        return []
 
-        # Filter by budget
-        budget = state.get("budget_max", 10000)
-        final_list = [h for h in all_hotels if h["price"] <= budget][:5]
-        
-        # --- LOGIC FIX: Fallback if empty ---
-        msg_intro = ""
-        if not final_list:
-            # If nothing under budget, take the top 3 cheapest anyway
-            final_list = all_hotels[:3]
-            if not final_list:
-                return {"messages": [AIMessage(content=f"😔 I couldn't find any hotels in {city} at all. Maybe try a different date?")]}
+def search_hotels(state: AgentState):
+    if not state.get("requirements_complete"): return {}
+    if state.get("hotels"): return {} 
+    
+    city = state.get("destination")
+    print(f"🔎 Searching for hotels in {city}...")
+    
+    # Calculate nights
+    try:
+        d1 = datetime.strptime(state["check_in"], "%Y-%m-%d")
+        d2 = datetime.strptime(state["check_out"], "%Y-%m-%d")
+        nights = max(1, (d2 - d1).days)
+    except: nights = 1
+
+    # --- ATTEMPT 1: Search Original City ---
+    raw_data = _fetch_hotels_from_api(city, state["check_in"], state["check_out"], state["guests"])
+    used_city = city
+    
+    # --- ATTEMPT 2: Smart Pivot (If 0 results) ---
+    if not raw_data:
+        print(f"⚠️ Zero results for '{city}'. Triggering Smart Pivot...")
+        try:
+            llm = get_llm()
+            pivot_prompt = f"I searched for hotels in '{city}' and found 0 results. Name the SINGLE best specific city, district, or island inside or near '{city}' that definitely has hotels. Return ONLY the name."
+            new_city = llm.invoke(pivot_prompt).content.strip().replace(".", "")
             
-            min_found = final_list[0]['price']
-            msg_intro = f"⚠️ I couldn't find anything strictly under **${budget}**. The cheapest options start at **${min_found}/night**:"
+            print(f"🔄 Pivoting search to: {new_city}")
+            raw_data = _fetch_hotels_from_api(new_city, state["check_in"], state["check_out"], state["guests"])
+            
+            if raw_data:
+                used_city = new_city # Update city name for the user message
+        except Exception as e:
+            print(f"Pivot failed: {e}")
+
+    # Process Results
+    all_hotels = []
+    for h in raw_data:
+        try: 
+            total_price = float(h.get("min_total_price", 0))
+            if total_price == 0: continue
+            price_per_night = round(total_price / nights, 2)
+            
+            all_hotels.append({
+                "name": h.get("hotel_name"), 
+                "price": price_per_night,
+                "total": total_price,
+                "rating": h.get("review_score", "N/A")
+            })
+        except: pass
+    
+    all_hotels.sort(key=lambda x: x["price"])
+    budget = state.get("budget_max", 10000)
+    final_list = [h for h in all_hotels if h["price"] <= budget][:5]
+    
+    # Fallback Logic
+    msg_intro = ""
+    if not final_list:
+        final_list = all_hotels[:3]
+        if not final_list:
+            return {"messages": [AIMessage(content=f"😔 I couldn't find any hotels in '{city}' or nearby. Maybe try different dates?")]}
+        min_found = final_list[0]['price']
+        msg_intro = f"⚠️ I couldn't find anything under **${budget}** in {used_city}. The cheapest options start at **${min_found}/night**:"
+    else:
+        if used_city != city:
+            msg_intro = f"ℹ️ I couldn't find hotels directly in '{city}', but I found these great options nearby in **{used_city}**:"
         else:
             msg_intro = f"🎉 I found these options in {city} under **${budget}/night**:"
 
-        # Format output
-        options = "\n".join([f"{i+1}. {h['name']} - ${h['price']}/night (Rating: {h['rating']})" for i, h in enumerate(final_list)])
-        msg = f"{msg_intro}\n\n{options}\n\nReply with the number to book."
-        
-        return {"hotels": final_list, "messages": [AIMessage(content=msg)]}
-
-    except Exception as e:
-        return {"messages": [AIMessage(content=f"⚠️ Search failed: {str(e)}")]}
+    options = "\n".join([f"{i+1}. {h['name']} - ${h['price']}/night (Rating: {h['rating']})" for i, h in enumerate(final_list)])
+    msg = f"{msg_intro}\n\n{options}\n\nReply with the number to book."
+    
+    return {"hotels": final_list, "messages": [AIMessage(content=msg)]}
 
 # --- 7. Node: Select Room & Book ---
 def select_room(state: AgentState):
@@ -272,7 +279,6 @@ def select_room(state: AgentState):
             "messages": [AIMessage(content=f"Great! For {h['name']}, Standard (${h['price']}) or Suite (${h['price']*1.5})?")]
         }
     
-    # FIX: Use robust helper
     last_msg = get_message_text(state["messages"][-1]).lower()
     
     if "suite" in last_msg:
