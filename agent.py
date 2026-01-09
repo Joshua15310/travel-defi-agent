@@ -1,8 +1,8 @@
 # agent.py
 import os
 import requests
-import time
 import operator
+import time
 from datetime import date, timedelta, datetime
 from typing import TypedDict, List, Optional, Annotated
 
@@ -42,19 +42,23 @@ class AgentState(TypedDict, total=False):
     selected_hotel: dict
     room_options: List[dict]
     final_room_type: str
-    final_price: float
+    final_price_per_night: float
+    final_total_price: float # Total for all nights
     final_status: str
     date_just_set: bool 
     requirements_complete: bool
-    trip_type: str  # New field to track context (honeymoon, business, etc.)
+    trip_type: str
+    waiting_for_booking_confirmation: bool # GUARDRAIL FLAG
 
 # --- 2. Structured Output Schema ---
 class TravelIntent(BaseModel):
     destination: Optional[str] = Field(description="City or country name. None if asking for suggestions.")
-    check_in: Optional[str] = Field(description="YYYY-MM-DD date. Calculate from relative terms.")
+    check_in: Optional[str] = Field(description="YYYY-MM-DD date. If 'weekend', pick next Friday.")
+    check_out: Optional[str] = Field(description="YYYY-MM-DD date. If 'weekend', pick Sunday.")
     guests: Optional[int] = Field(description="Number of people. Infer 2 for honeymoon/couple.")
     budget_max: Optional[float] = Field(description="Maximum price per night in USD.")
     trip_context: Optional[str] = Field(description="Context: 'honeymoon', 'business', 'family', or 'solo'.")
+    is_confirmation: bool = Field(description="True if user says 'yes', 'proceed', 'book it', 'confirm'.")
 
 # --- 3. Helpers ---
 def get_llm():
@@ -94,28 +98,41 @@ def parse_intent(state: AgentState):
     
     last_msg = get_message_text(messages[-1]).lower()
     
-    # Handle Global Reset
+    # Global Reset
     if "start over" in last_msg or "reset" in last_msg:
         return {
             "destination": None, "check_in": None, "check_out": None,
             "guests": None, "budget_max": None, "hotels": [],
+            "selected_hotel": {}, "final_room_type": None,
+            "waiting_for_booking_confirmation": False,
             "messages": [AIMessage(content="🔄 System reset. Where are we going next?")]
         }
+
+    # Handling Confirmation Logic
+    if state.get("waiting_for_booking_confirmation"):
+        if any(word in last_msg for word in ["yes", "proceed", "confirm", "ok", "do it", "book"]):
+             # Return no updates here, let the routing send it to 'book_hotel'
+             return {}
+        else:
+            return {"waiting_for_booking_confirmation": False, "messages": [AIMessage(content="🚫 Booking cancelled. You can change options or start over.")]}
 
     today = date.today().strftime("%Y-%m-%d")
     llm = get_llm()
     structured_llm = llm.with_structured_output(TravelIntent)
     
-    # Updated Prompt for Context Inference
+    # UPDATED SYSTEM PROMPT FOR WEEKEND LOGIC
     system_prompt = f"""
     You are an intelligent travel assistant. Today is {today}.
-    Analyze conversation. Extract details.
     
-    CRITICAL RULES:
-    1. If user mentions "honeymoon" or "couple", set guests=2 and trip_context='honeymoon'.
-    2. If user mentions "family", infer guests from context (default 3 if unspecified) and set trip_context='family'.
-    3. Calculate check_in date accurately.
-    4. If duration is given (e.g. "for 3 days"), calculate check_out.
+    CRITICAL DATE RULES:
+    1. If user says "weekend" or "next weekend":
+       - Check-in = Next Friday.
+       - Check-out = The Sunday after that Friday (2 nights).
+    2. If duration is specific (e.g. "3 days"), calculate Check-out = Check-in + 3 days.
+    
+    CONTEXT RULES:
+    1. "Honeymoon" or "Couple" = 2 guests.
+    2. "Family" = Infer count (default 3 or 4).
     """
     
     try:
@@ -124,29 +141,24 @@ def parse_intent(state: AgentState):
         updates = {}
         if intent.destination: updates["destination"] = intent.destination.title()
         
-        # Date Logic
+        # Exact Date Logic
         if intent.check_in: 
             updates["check_in"] = intent.check_in
-            # If Grok didn't auto-calculate checkout but we have a start date, default to +2 days
-            if not state.get("check_out"):
-                 # Simple default logic, ideally Grok handles the "3 days" math in the intent
-                 # For robust "3 days" handling, we rely on the prompt instructing Grok or we parse it here if needed.
-                 # To keep it simple, we assume Grok extracts dates if possible, or we default.
-                 try:
+            if intent.check_out:
+                updates["check_out"] = intent.check_out
+            else:
+                # Fallback default: 2 nights
+                try:
                     dt = datetime.strptime(intent.check_in, "%Y-%m-%d")
-                    # Check if user text had duration keywords to override default
-                    duration = 2
-                    if "3 days" in last_msg: duration = 3
-                    if "week" in last_msg: duration = 7
-                    updates["check_out"] = (dt + timedelta(days=duration)).strftime("%Y-%m-%d")
-                 except: pass
+                    updates["check_out"] = (dt + timedelta(days=2)).strftime("%Y-%m-%d")
+                except: pass
 
         if intent.guests: updates["guests"] = intent.guests
         if intent.budget_max: updates["budget_max"] = intent.budget_max
         if intent.trip_context: updates["trip_type"] = intent.trip_context
         
-        # Handle manual number selection (Hotels)
-        if state.get("hotels") and last_msg.strip().isdigit():
+        # Handle Hotel Selection (Only if not already confirmed)
+        if state.get("hotels") and not state.get("selected_hotel") and last_msg.strip().isdigit():
             idx = int(last_msg) - 1
             if 0 <= idx < len(state["hotels"]):
                 updates["selected_hotel"] = state["hotels"][idx]
@@ -169,7 +181,7 @@ def gather_requirements(state: AgentState):
 
     llm = get_llm()
     prompt = ChatPromptTemplate.from_messages([
-        ("system", "You are Nomad, a witty travel agent. Ask for missing details: {missing_fields}. Keep it short."),
+        ("system", "You are Nomad, a witty travel agent. Ask for missing details: {missing_fields}. Be concise."),
         MessagesPlaceholder(variable_name="messages"),
     ])
     
@@ -177,7 +189,7 @@ def gather_requirements(state: AgentState):
     response = chain.invoke({"missing_fields": ", ".join(missing), "messages": state.get("messages", [])})
     return {"requirements_complete": False, "messages": [response]}
 
-# --- 6. Node: Search Hotels (With Pivot & Star Ratings) ---
+# --- 6. Node: Search Hotels (Stars Fixed) ---
 def _fetch_hotels_from_api(city, check_in, check_out, guests, rooms):
     try:
         headers = {"X-RapidAPI-Key": BOOKING_KEY, "X-RapidAPI-Host": "booking-com.p.rapidapi.com"}
@@ -240,9 +252,14 @@ def search_hotels(state: AgentState):
             if total_price == 0: continue
             price_per_night = round(total_price / nights, 2)
             
-            # Star Rating Logic
+            # STAR RATING FIX
             stars = h.get("class", 0)
-            star_str = "⭐" * int(stars) if stars else "Rating: " + str(h.get("review_score", "N/A"))
+            # Sometimes APIs use different fields, we check 'class' then 'review_score'
+            if stars > 0:
+                star_str = "⭐" * int(stars)
+            else:
+                score = h.get("review_score", 0)
+                star_str = f"Rating: {score}" if score else "New"
 
             all_hotels.append({
                 "name": h.get("hotel_name"), "price": price_per_night,
@@ -263,101 +280,127 @@ def search_hotels(state: AgentState):
     else:
         msg_intro = f"🎉 Options in **{used_city}** under **${budget}/night**:"
 
-    # Fixed List Formatting
+    # Formatting with Stars
     options = "\n".join([f"{i+1}. **{h['name']}** - ${h['price']}/night ({h['rating']})" for i, h in enumerate(final_list)])
     msg = f"{msg_intro}\n\n{options}\n\nReply with the number to book (e.g., '1')."
     return {"hotels": final_list, "messages": [AIMessage(content=msg)]}
 
-# --- 7. Node: Select Room (Robust Parsing) ---
+# --- 7. Node: Select Room & Calculate Total ---
 def select_room(state: AgentState):
-    # Case A: Present Options
+    # Case A: Present Options (Hotel selected, room not yet)
     if state.get("selected_hotel") and not state.get("room_options"):
         h = state["selected_hotel"]
         room_options = [
             {"type": "Standard Room", "price": h["price"]}, 
             {"type": "Ocean View Suite", "price": round(h["price"]*1.5, 2)}
         ]
-        
-        # Clean List Format
-        rooms_list = "\n".join([f"{i+1}. **{r['type']}** - ${r['price']}" for i, r in enumerate(room_options)])
+        rooms_list = "\n".join([f"{i+1}. **{r['type']}** - ${r['price']}/night" for i, r in enumerate(room_options)])
         msg = f"Great! For **{h['name']}**, please choose a room:\n\n{rooms_list}\n\nReply with '1' or '2'."
         return {"room_options": room_options, "messages": [AIMessage(content=msg)]}
     
-    # Case B: Parse Selection (Robust)
+    # Case B: Parse Selection & Ask for Payment Confirmation
     last_msg = get_message_text(state["messages"][-1]).lower()
     options = state.get("room_options", [])
     
-    # 1. Try Number match
+    selected_room = None
     if last_msg.strip().isdigit():
         idx = int(last_msg) - 1
-        if 0 <= idx < len(options):
-            return {"final_room_type": options[idx]["type"], "final_price": options[idx]["price"]}
-            
-    # 2. Try Keyword match
-    if "suite" in last_msg or "ocean" in last_msg:
-         return {"final_room_type": options[1]["type"], "final_price": options[1]["price"]}
-    if "standard" in last_msg or "basic" in last_msg:
-         return {"final_room_type": options[0]["type"], "final_price": options[0]["price"]}
+        if 0 <= idx < len(options): selected_room = options[idx]
+    elif "suite" in last_msg or "ocean" in last_msg:
+         selected_room = options[1]
+    elif "standard" in last_msg or "basic" in last_msg:
+         selected_room = options[0]
          
+    if selected_room:
+        # CALCULATE TOTAL PRICE
+        try:
+            d1 = datetime.strptime(state["check_in"], "%Y-%m-%d")
+            d2 = datetime.strptime(state["check_out"], "%Y-%m-%d")
+            nights = max(1, (d2 - d1).days)
+        except: nights = 1
+        
+        total_cost = selected_room["price"] * nights
+        
+        msg = f"""Summary of your trip:
+        
+🏨 **Hotel:** {state['selected_hotel']['name']}
+🛏️ **Room:** {selected_room['type']}
+📅 **Duration:** {nights} Nights ({state['check_in']} to {state['check_out']})
+💵 **Nightly Rate:** ${selected_room['price']}
+
+💰 **TOTAL TO PAY: ${total_cost:.2f}**
+
+Reply 'Yes' or 'Confirm' to proceed with payment."""
+
+        return {
+            "final_room_type": selected_room["type"],
+            "final_price_per_night": selected_room["price"],
+            "final_total_price": total_cost,
+            "waiting_for_booking_confirmation": True, # ENABLE GUARDRAIL
+            "messages": [AIMessage(content=msg)]
+        }
+
     return {"messages": [AIMessage(content="⚠️ I didn't catch that. Please reply with '1' for Standard or '2' for Suite.")]}
 
-# --- 8. Node: Book Hotel (Celebratory + Transaction Link) ---
-def validate_booking(state: AgentState):
-    if state.get("final_price") > state.get("budget_max", 10000) * 1.2:
-        return {"messages": [AIMessage(content="⚠️ Price is significantly over your budget. Confirm?")]}
-    return {}
-
+# --- 8. Node: Book Hotel (Final Step) ---
 def book_hotel(state: AgentState):
-    if not state.get("final_room_type"): return {}
+    # Double check confirmation
+    if not state.get("waiting_for_booking_confirmation"): return {}
     
-    # Call Warden SDK
+    # Call Warden SDK with TOTAL PRICE
     details = f"{state['selected_hotel']['name']} ({state['final_room_type']})"
-    res = warden_client.submit_booking(details, state["final_price"], state["destination"], 0.0)
+    res = warden_client.submit_booking(details, state["final_total_price"], state["destination"], 0.0)
     tx = res.get("tx_hash", "0xMOCK")
     
-    # Personalize Message
     context = state.get("trip_type", "trip")
-    if context == "honeymoon":
-        congrats = "💍 Congratulations to you and your partner! I've booked the perfect romantic getaway."
-    elif context == "family":
-        congrats = "👨‍👩‍👧‍👦 Awesome! Your family vacation is all set."
-    else:
-        congrats = "✅ Success! Your trip is booked."
+    congrats = "💍 Congratulations to you and your partner!" if context == "honeymoon" else "✅ Success! Your trip is booked."
 
     msg = f"""{congrats}
 
 🏨 **Hotel:** {state['selected_hotel']['name']}
 🛏️ **Room:** {state['final_room_type']}
 📅 **Dates:** {state['check_in']} to {state['check_out']}
-💰 **Total:** ${state['final_price']}
+💰 **Paid:** ${state['final_total_price']:.2f}
 
 🔗 **Proof of Transaction:**
 [View on BaseScan](https://sepolia.basescan.org/tx/{tx})
 
 Safe travels! ✈️"""
     
-    return {"final_status": "Booked", "messages": [AIMessage(content=msg)]}
+    # Clear confirmation flag after booking
+    return {"final_status": "Booked", "waiting_for_booking_confirmation": False, "messages": [AIMessage(content=msg)]}
 
 # --- 9. Routing ---
 def route_step(state):
     if not state.get("requirements_complete"): return "end"
     if not state.get("hotels"): return "search"
     if not state.get("selected_hotel"): return "end"
-    if not state.get("final_room_type"): return "select_room"
-    if state.get("final_status") != "Booked": return "validate"
-    return "book"
+    
+    # If room selected, check if we are waiting for confirmation
+    if state.get("final_room_type"):
+        if state.get("waiting_for_booking_confirmation"):
+            # Check last message for confirmation
+            last_msg = get_message_text(state["messages"][-1]).lower()
+            if any(w in last_msg for w in ["yes", "proceed", "confirm", "ok", "do it"]):
+                return "book"
+            else:
+                return "end" # Wait for user input (either "yes" or something else)
+        else:
+            return "select_room" # Show options again if logic flow broke
+            
+    return "select_room"
 
 workflow = StateGraph(AgentState)
 workflow.add_node("parse", parse_intent); workflow.add_node("gather", gather_requirements)
 workflow.add_node("search", search_hotels); workflow.add_node("select_room", select_room)
-workflow.add_node("validate", validate_booking); workflow.add_node("book", book_hotel)
+workflow.add_node("book", book_hotel)
 
 workflow.set_entry_point("parse")
 workflow.add_edge("parse", "gather")
 workflow.add_conditional_edges("gather", route_step, {
-    "end": END, "search": "search", "select_room": "select_room", "validate": "validate", "book": "book"
+    "end": END, "search": "search", "select_room": "select_room", "book": "book"
 })
 workflow.add_edge("search", END); workflow.add_edge("select_room", END)
-workflow.add_edge("validate", "book"); workflow.add_edge("book", END)
+workflow.add_edge("book", END)
 
 memory = MemorySaver(); workflow_app = workflow.compile(checkpointer=memory)
