@@ -26,8 +26,6 @@ BOOKING_KEY = os.getenv("BOOKING_API_KEY")
 
 LLM_BASE_URL = "https://api.x.ai/v1" 
 LLM_API_KEY = os.getenv("GROK_API_KEY") or os.getenv("OPENAI_API_KEY")
-
-# FIX: Updated model name from deprecated 'grok-beta' to 'grok-3'
 LLM_MODEL = "grok-3" if os.getenv("GROK_API_KEY") else "gpt-4o-mini"
 
 # --- 1. State Definition ---
@@ -171,7 +169,7 @@ def gather_requirements(state: AgentState):
     
     return {"requirements_complete": False, "messages": [response]}
 
-# --- 6. Node: Search Hotels ---
+# --- 6. Node: Search Hotels (Logic Fixed with Soft Fallback) ---
 def search_hotels(state: AgentState):
     if not state.get("requirements_complete"): return {}
     if state.get("hotels"): return {} 
@@ -179,6 +177,14 @@ def search_hotels(state: AgentState):
     city = state.get("destination")
     print(f"🔎 Searching for hotels in {city}...")
     
+    # Calculate number of nights for accurate pricing
+    try:
+        d1 = datetime.strptime(state["check_in"], "%Y-%m-%d")
+        d2 = datetime.strptime(state["check_out"], "%Y-%m-%d")
+        nights = max(1, (d2 - d1).days)
+    except:
+        nights = 1
+
     try:
         headers = {"X-RapidAPI-Key": BOOKING_KEY, "X-RapidAPI-Host": "booking-com.p.rapidapi.com"}
         
@@ -204,26 +210,54 @@ def search_hotels(state: AgentState):
                 r = requests.get("https://booking-com.p.rapidapi.com/v1/hotels/search", 
                                 headers=headers, params=params, timeout=15)
                 r.raise_for_status()
-                raw_data = r.json().get("result", [])[:10]
+                raw_data = r.json().get("result", [])[:15] # Fetch a few more to filter
                 break
             except:
                 if attempt < 2: time.sleep(2)
         
-        # Filter
-        final_list = []
-        budget = state.get("budget_max", 10000)
+        # 3. Smart Filtering
+        all_hotels = []
         for h in raw_data:
-            try: price = float(h.get("min_total_price", 150))
-            except: price = 150.0
-            if price <= budget:
-                final_list.append({"name": h.get("hotel_name"), "price": price, "rating": h.get("review_score", "N/A")})
-                if len(final_list) >= 5: break
+            try: 
+                total_price = float(h.get("min_total_price", 0))
+                if total_price == 0: continue # Skip invalid data
+                
+                # Calculate nightly price
+                price_per_night = round(total_price / nights, 2)
+                
+                hotel_obj = {
+                    "name": h.get("hotel_name"), 
+                    "price": price_per_night, # We store the NIGHTLY price
+                    "total": total_price,
+                    "rating": h.get("review_score", "N/A")
+                }
+                all_hotels.append(hotel_obj)
+            except: pass
         
+        # Sort by price (cheapest first)
+        all_hotels.sort(key=lambda x: x["price"])
+
+        # Filter by budget
+        budget = state.get("budget_max", 10000)
+        final_list = [h for h in all_hotels if h["price"] <= budget][:5]
+        
+        # --- LOGIC FIX: Fallback if empty ---
+        msg_intro = ""
         if not final_list:
-            return {"messages": [AIMessage(content=f"😔 No hotels found under ${budget} in {city}.")]}
+            # If nothing under budget, take the top 3 cheapest anyway
+            final_list = all_hotels[:3]
+            if not final_list:
+                return {"messages": [AIMessage(content=f"😔 I couldn't find any hotels in {city} at all. Maybe try a different date?")]}
             
-        options = "\n".join([f"{i+1}. {h['name']} - ${h['price']}" for i, h in enumerate(final_list)])
-        msg = f"🎉 Options in {city} for {state['check_in']}:\n\n{options}\n\nReply with the number to book."
+            min_found = final_list[0]['price']
+            msg_intro = f"⚠️ I couldn't find anything strictly under **${budget}**. The cheapest options start at **${min_found}/night**:"
+        else:
+            msg_intro = f"🎉 I found these options in {city} under **${budget}/night**:"
+
+        # Format output
+        options = "\n".join([f"{i+1}. {h['name']} - ${h['price']}/night (Rating: {h['rating']})" for i, h in enumerate(final_list)])
+        msg = f"{msg_intro}\n\n{options}\n\nReply with the number to book."
+        
         return {"hotels": final_list, "messages": [AIMessage(content=msg)]}
 
     except Exception as e:
