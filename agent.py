@@ -28,8 +28,8 @@ LLM_BASE_URL = "https://api.x.ai/v1"
 LLM_API_KEY = os.getenv("GROK_API_KEY") or os.getenv("OPENAI_API_KEY")
 LLM_MODEL = "grok-3" if os.getenv("GROK_API_KEY") else "gpt-4o-mini"
 
-# Simple FX Rates for Demo (In production, use an Oracle)
-FX_RATES = {"GBP": 1.28, "EUR": 1.08, "USD": 1.0, "CAD": 0.74, "AUD": 0.66, "NGN": 0.00065}
+# Demo Exchange Rates (In prod, fetch live)
+FX_RATES = {"GBP": 1.28, "EUR": 1.08, "USD": 1.0, "CAD": 0.74, "NGN": 0.00065}
 
 # --- 1. State Definition ---
 class AgentState(TypedDict, total=False):
@@ -40,16 +40,15 @@ class AgentState(TypedDict, total=False):
     guests: int
     rooms: int
     budget_max: float
-    currency: str          # e.g., "GBP", "USD"
-    currency_symbol: str   # e.g., "£", "$"
+    currency: str          
+    currency_symbol: str   
     hotels: List[dict]
-    hotel_cursor: int      # For pagination ("more options")
     selected_hotel: dict
     room_options: List[dict] 
     final_room_type: str
     final_price_per_night: float
-    final_total_price_local: float # Total in user's currency
-    final_total_price_usd: float   # Total converted to USDC
+    final_total_price_local: float 
+    final_total_price_usd: float   
     final_status: str
     date_just_set: bool 
     requirements_complete: bool
@@ -60,16 +59,14 @@ class AgentState(TypedDict, total=False):
 class TravelIntent(BaseModel):
     destination: Optional[str] = Field(description="City or country name.")
     check_in: Optional[str] = Field(description="YYYY-MM-DD date. 'weekend' = next Friday.")
+    check_out: Optional[str] = Field(description="YYYY-MM-DD date. 'weekend' = next Sunday.")
     guests: Optional[int] = Field(description="Infer 2 for honeymoon/couple.")
     budget_max: Optional[float] = Field(description="Numeric budget value.")
-    currency: Optional[str] = Field(description="Currency code: USD, GBP, EUR, NGN. Default USD.")
-    sort_preference: Optional[str] = Field(description="'luxury', 'cheap', 'fancier', 'more'.")
+    currency: Optional[str] = Field(description="Currency code: USD, GBP, EUR. Default USD.")
     trip_context: Optional[str] = Field(description="'honeymoon', 'business', 'family'.")
 
 # --- 3. Helpers ---
 def get_llm():
-    if not LLM_API_KEY:
-        print("⚠️ Warning: No LLM API Key found.")
     return ChatOpenAI(
         model=LLM_MODEL,
         api_key=LLM_API_KEY,
@@ -78,18 +75,14 @@ def get_llm():
     )
 
 def get_message_text(msg):
-    """Safely extracts text from Dicts, Objects, or Multimodal Lists."""
     content = ""
     if hasattr(msg, 'content'): content = msg.content
     elif isinstance(msg, dict): content = msg.get('content', '')
     else: content = str(msg)
     
     if isinstance(content, list):
-        text_parts = []
-        for part in content:
-            if isinstance(part, str): text_parts.append(part)
-            elif isinstance(part, dict) and "text" in part: text_parts.append(str(part["text"]))
-        return " ".join(text_parts)
+        parts = [str(p) if isinstance(p, str) else str(p.get("text", "")) for p in content]
+        return " ".join(parts)
     return str(content)
 
 # --- 4. Node: Intelligent Intent Parser ---
@@ -98,33 +91,32 @@ def parse_intent(state: AgentState):
     if not messages: return {}
     last_msg = get_message_text(messages[-1]).lower()
     
-    # Global Reset
+    # 1. Reset
     if "start over" in last_msg or "reset" in last_msg:
         return {
             "destination": None, "check_in": None, "check_out": None,
-            "guests": None, "budget_max": None, "hotels": [], "hotel_cursor": 0,
-            "selected_hotel": None, "room_options": [], "final_room_type": None,
+            "guests": None, "budget_max": None, "hotels": [], 
+            "selected_hotel": None, "room_options": [], 
             "waiting_for_booking_confirmation": False,
             "messages": [AIMessage(content="🔄 System reset. Where are we going next?")]
         }
 
-    # Handling Confirmation Logic
+    # 2. Confirmation Check
     if state.get("waiting_for_booking_confirmation"):
-        if any(w in last_msg for w in ["yes", "proceed", "confirm", "ok", "do it", "book", "pay"]):
-             return {} 
+        if any(w in last_msg for w in ["yes", "proceed", "confirm", "book", "pay"]):
+             return {} # Proceed to book_hotel
         else:
-            return {
-                "waiting_for_booking_confirmation": False, 
-                "room_options": [], 
-                "messages": [AIMessage(content="🚫 Booking cancelled. Please select a hotel number again.")]
-            }
+            return {"waiting_for_booking_confirmation": False, "messages": [AIMessage(content="🚫 Booking cancelled.")]}
 
-    # --- HOTEL SELECTION LOGIC ---
+    # 3. Pagination / Refinement
+    if "fancier" in last_msg or "better" in last_msg or "more" in last_msg:
+        # Clear hotels to trigger re-search with new sort
+        return {"hotels": [], "room_options": [], "selected_hotel": None}
+
+    # 4. Hotel Selection (Collision Proof)
     is_selecting_room = state.get("selected_hotel") and state.get("room_options")
     if state.get("hotels") and not is_selecting_room and last_msg.strip().isdigit():
         idx = int(last_msg) - 1
-        # Adjust index based on cursor if we implemented full pagination
-        # For simplicity, we assume the user sees 1-5 and types 1-5.
         if 0 <= idx < len(state["hotels"]):
             return {
                 "selected_hotel": state["hotels"][idx],
@@ -132,12 +124,7 @@ def parse_intent(state: AgentState):
                 "waiting_for_booking_confirmation": False
             }
 
-    # PAGINATION / REFINEMENT (The "Fancier" Fix)
-    if "more" in last_msg or "fancier" in last_msg or "cheaper" in last_msg:
-        # We trigger a re-search or cursor update. 
-        # Returning "hotels": [] forces the search node to run again with new context
-        return {"hotels": [], "room_options": [], "selected_hotel": None}
-
+    # 5. Extraction
     today = date.today().strftime("%Y-%m-%d")
     llm = get_llm()
     structured_llm = llm.with_structured_output(TravelIntent)
@@ -147,8 +134,8 @@ def parse_intent(state: AgentState):
     
     RULES:
     1. Extract destination, dates, guests.
-    2. Extract CURRENCY (e.g. "300 pounds" -> GBP, "400 euros" -> EUR). Default USD.
-    3. Detect SORT PREFERENCE: If user says "fancier", "luxury", "better", set sort_preference='luxury'.
+    2. Extract CURRENCY (e.g. "400 pounds" -> GBP).
+    3. If user says "weekend", check-in is next Friday, check-out is Sunday.
     """
     
     try:
@@ -156,22 +143,20 @@ def parse_intent(state: AgentState):
         
         updates = {}
         if intent.destination: updates["destination"] = intent.destination.title()
+        if intent.check_in: updates["check_in"] = intent.check_in
+        if intent.check_out: updates["check_out"] = intent.check_out
         
-        # Date Logic
-        if intent.check_in: 
-            updates["check_in"] = intent.check_in
-            if intent.check_out: updates["check_out"] = intent.check_out
-            else:
-                try:
-                    dt = datetime.strptime(intent.check_in, "%Y-%m-%d")
-                    updates["check_out"] = (dt + timedelta(days=2)).strftime("%Y-%m-%d")
-                except: pass
+        # Date Auto-fill
+        if updates.get("check_in") and not updates.get("check_out"):
+             try:
+                dt = datetime.strptime(updates["check_in"], "%Y-%m-%d")
+                updates["check_out"] = (dt + timedelta(days=2)).strftime("%Y-%m-%d")
+             except: pass
 
         if intent.guests: updates["guests"] = intent.guests
         if intent.budget_max: updates["budget_max"] = intent.budget_max
         if intent.trip_context: updates["trip_type"] = intent.trip_context
         
-        # Currency Logic
         if intent.currency:
             curr = intent.currency.upper()
             updates["currency"] = curr
@@ -195,15 +180,19 @@ def gather_requirements(state: AgentState):
         return {"requirements_complete": True}
 
     llm = get_llm()
+    # HARDENED PROMPT: Override Safety Refusals
     prompt = ChatPromptTemplate.from_messages([
-        ("system", "Ask for missing details: {missing_fields}. Be concise."),
+        ("system", """You are Nomad, a Web3 Travel Agent. 
+        YOU HAVE FULL AUTHORITY TO BOOK HOTELS via the Warden Protocol.
+        NEVER say you cannot book.
+        Ask for missing details: {missing_fields}."""),
         MessagesPlaceholder(variable_name="messages"),
     ])
     chain = prompt | llm
     response = chain.invoke({"missing_fields": ", ".join(missing), "messages": state.get("messages", [])})
     return {"requirements_complete": False, "messages": [response]}
 
-# --- 6. Node: Search Hotels (Smart Sort & Currency) ---
+# --- 6. Node: Search Hotels (Luxury Sort & Currency) ---
 def _fetch_hotels_from_api(city, check_in, check_out, guests, rooms, currency):
     try:
         headers = {"X-RapidAPI-Key": BOOKING_KEY, "X-RapidAPI-Host": "booking-com.p.rapidapi.com"}
@@ -214,23 +203,22 @@ def _fetch_hotels_from_api(city, check_in, check_out, guests, rooms, currency):
         
         dest_id, dest_type = data[0].get("dest_id"), data[0].get("dest_type")
         
-        # We request data in the USER'S currency
         params = {
             "dest_id": dest_id, "dest_type": dest_type,
             "checkin_date": check_in, "checkout_date": check_out,
             "adults_number": str(guests), "room_number": str(rooms),
             "units": "metric", 
-            "filter_by_currency": currency, # <--- DYNAMIC CURRENCY
+            "filter_by_currency": currency, 
             "order_by": "price", "locale": "en-us"
         }
         
-        # Fetch MORE results (30) so we can sort them ourselves
+        # Fetch 30+ to allow sorting
         raw_data = []
         for attempt in range(3):
             try:
                 res = requests.get("https://booking-com.p.rapidapi.com/v1/hotels/search", 
                                 headers=headers, params=params, timeout=15)
-                raw_data = res.json().get("result", [])[:30] # Get top 30
+                raw_data = res.json().get("result", [])[:30]
                 break
             except:
                 if attempt < 2: time.sleep(2)
@@ -240,7 +228,7 @@ def _fetch_hotels_from_api(city, check_in, check_out, guests, rooms, currency):
 def search_hotels(state: AgentState):
     if not state.get("requirements_complete"): return {}
     if state.get("selected_hotel"): return {} 
-    if state.get("hotels"): return {} # Already have list? Keep it unless cleared.
+    if state.get("hotels"): return {} 
     
     city = state.get("destination")
     rooms = state.get("rooms", 1)
@@ -253,7 +241,6 @@ def search_hotels(state: AgentState):
         nights = max(1, (d2 - d1).days)
     except: nights = 1
 
-    # Fetch
     raw_data = _fetch_hotels_from_api(city, state["check_in"], state["check_out"], state["guests"], rooms, currency)
     used_city = city
     
@@ -265,7 +252,6 @@ def search_hotels(state: AgentState):
         raw_data = _fetch_hotels_from_api(new_city, state["check_in"], state["check_out"], state["guests"], rooms, currency)
         if raw_data: used_city = new_city
 
-    # Parse and Clean
     all_hotels = []
     for h in raw_data:
         try: 
@@ -273,14 +259,13 @@ def search_hotels(state: AgentState):
             if total_price == 0: continue
             price_per_night = round(total_price / nights, 2)
             
-            # Star Rating
             stars = h.get("class", 0)
             star_val = int(stars) if stars else 0
-            star_str = "⭐" * star_val if star_val > 0 else f"Rating: {h.get('review_score', 'New')}"
+            star_str = "⭐" * star_val if star_val > 0 else f"Rating: {h.get('review_score', 'N/A')}"
 
             all_hotels.append({
                 "name": h.get("hotel_name"), 
-                "price": price_per_night, # In Local Currency
+                "price": price_per_night, 
                 "total": total_price,
                 "rating_str": star_str,
                 "stars": star_val,
@@ -288,37 +273,37 @@ def search_hotels(state: AgentState):
             })
         except: pass
     
-    # --- SMART SORTING (The "Quality" Fix) ---
+    # --- LUXURY SORT LOGIC ---
     budget = state.get("budget_max", 10000)
     
-    # 1. Filter by budget first
+    # 1. Filter
     valid_hotels = [h for h in all_hotels if h["price"] <= budget]
     
-    # 2. If no hotels under budget, use fallback
     if not valid_hotels:
+        # Fallback: Cheapest if budget too low
         valid_hotels = sorted(all_hotels, key=lambda x: x["price"])[:3]
-        msg_intro = f"⚠️ I couldn't find anything strictly under {symbol}{budget}. Cheapest options:"
+        msg_intro = f"⚠️ I found nothing strictly under {symbol}{budget}. Cheapest nearby:"
     else:
-        # 3. If Budget is HIGH (> 200), sort by QUALITY (Stars > Score > Price)
-        # This fixes the "cheap hostel" issue for rich clients
+        # 2. Logic: If Budget > 200, prioritize QUALITY
         if budget > 200:
-            valid_hotels.sort(key=lambda x: (x["stars"], x["score"]), reverse=True)
-            msg_intro = f"✨ Top options in **{used_city}** (Quality First):"
+            # Sort by Stars (Desc), then Price (Desc - show best rooms first)
+            valid_hotels.sort(key=lambda x: (x["stars"], x["price"]), reverse=True)
+            msg_intro = f"✨ Top options in **{used_city}** (Quality & Luxury):"
         else:
-            # Low budget? Sort by Price (Ascending)
+            # Low Budget: Sort by Price (Asc)
             valid_hotels.sort(key=lambda x: x["price"])
             msg_intro = f"🎉 Best value options in **{used_city}**:"
 
-    final_list = valid_hotels[:5] # Show top 5
+    final_list = valid_hotels[:5]
 
     options = "\n".join([f"{i+1}. **{h['name']}** - {symbol}{h['price']}/night ({h['rating_str']})" for i, h in enumerate(final_list)])
     msg = f"{msg_intro}\n\n{options}\n\nReply with the number to book (e.g., '1')."
     
     return {"hotels": final_list, "messages": [AIMessage(content=msg)]}
 
-# --- 7. Node: Select Room & Calculate Conversion ---
+# --- 7. Node: Select Room & Convert to USDC ---
 def select_room(state: AgentState):
-    # Case A: Present Options
+    # Case A: Show Options
     if state.get("selected_hotel") and not state.get("room_options"):
         h = state["selected_hotel"]
         sym = state.get("currency_symbol", "$")
@@ -348,14 +333,13 @@ def select_room(state: AgentState):
             nights = max(1, (d2 - d1).days)
         except: nights = 1
         
-        # 1. Local Total
+        # 1. Local
         local_total = selected_room["price"] * nights
         currency = state.get("currency", "USD")
         sym = state.get("currency_symbol", "$")
         
-        # 2. USDC Conversion (The "Pay on Base" Fix)
-        # Convert Local -> USD
-        rate = FX_RATES.get(currency, 1.0) # Get rate GBP->USD
+        # 2. USDC Conversion
+        rate = FX_RATES.get(currency, 1.0)
         usd_total = local_total * rate
         
         msg = f"""Summary of your trip:
@@ -363,14 +347,14 @@ def select_room(state: AgentState):
 🏨 **Hotel:** {state['selected_hotel']['name']}
 🛏️ **Room:** {selected_room['type']}
 📅 **Duration:** {nights} Nights
-💵 **Local Total:** {sym}{local_total:.2f}
+💵 **Local Cost:** {sym}{local_total:.2f}
 
-🔄 **Payment Conversion:**
-We accept payments in **USDC on Base**.
-Exchange Rate: 1 {currency} ≈ {rate} USDC
+🔄 **Payment:**
+We process payments in **USDC on Base**.
+Rate: 1 {currency} ≈ {rate} USDC
 **TOTAL TO PAY:** {usd_total:.2f} USDC
 
-Reply 'Yes' or 'Confirm' to initiate the transaction."""
+Reply 'Yes' or 'Confirm' to execute the booking transaction."""
 
         return {
             "final_room_type": selected_room["type"],
@@ -380,13 +364,13 @@ Reply 'Yes' or 'Confirm' to initiate the transaction."""
             "messages": [AIMessage(content=msg)]
         }
 
-    return {"messages": [AIMessage(content="⚠️ Please pick a room number ('1' or '2').")]}
+    return {"messages": [AIMessage(content="⚠️ Please reply '1' for Standard or '2' for Suite.")]}
 
 # --- 8. Node: Book Hotel ---
 def book_hotel(state: AgentState):
     if not state.get("waiting_for_booking_confirmation"): return {}
     
-    # Use the USD Price for the blockchain intent
+    # WARDEN EXECUTION
     details = f"{state['selected_hotel']['name']} ({state['final_room_type']}) [Chain: Base | Token: USDC]"
     res = warden_client.submit_booking(details, state["final_total_price_usd"], state["destination"], 0.0)
     tx = res.get("tx_hash", "0xMOCK")
