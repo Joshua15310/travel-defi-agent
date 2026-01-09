@@ -10,7 +10,10 @@ from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage, AIMessage, BaseMessage, SystemMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_openai import ChatOpenAI
-from langchain_core.pydantic_v1 import BaseModel, Field
+
+# --- FIX: Using standard Pydantic library directly ---
+from pydantic import BaseModel, Field
+
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 
@@ -20,7 +23,9 @@ load_dotenv()
 
 # --- CONFIGURATION ---
 BOOKING_KEY = os.getenv("BOOKING_API_KEY")
+
 # We use ChatOpenAI client but point it to xAI's base_url for Grok
+# This allows us to use Grok's reasoning with LangChain's tools
 LLM_BASE_URL = "https://api.x.ai/v1" 
 LLM_API_KEY = os.getenv("GROK_API_KEY") or os.getenv("OPENAI_API_KEY")
 LLM_MODEL = "grok-beta" if os.getenv("GROK_API_KEY") else "gpt-4o-mini"
@@ -58,7 +63,8 @@ class TravelIntent(BaseModel):
 def get_llm():
     """Initializes the LLM connection (Grok or OpenAI)."""
     if not LLM_API_KEY:
-        raise ValueError("⚠️ Missing GROK_API_KEY or OPENAI_API_KEY in .env")
+        # Fallback to a clear error if no key is found
+        print("⚠️ Warning: No LLM API Key found. Chat features may fail.")
     
     return ChatOpenAI(
         model=LLM_MODEL,
@@ -87,6 +93,7 @@ def parse_intent(state: AgentState):
     llm = get_llm()
     
     # We ask Grok to extract data OR tell us if it's just chat
+    # "with_structured_output" forces the LLM to return JSON matching our TravelIntent schema
     structured_llm = llm.with_structured_output(TravelIntent)
     
     system_prompt = f"""
@@ -146,7 +153,6 @@ def gather_requirements(state: AgentState):
 
     # If info is missing, ask Grok to generate the specific question
     llm = get_llm()
-    current_dest = state.get("destination", "unknown place")
     
     prompt = ChatPromptTemplate.from_messages([
         ("system", """You are Nomad, a witty and friendly travel agent. 
@@ -182,7 +188,6 @@ def search_hotels(state: AgentState):
     city = state.get("destination")
     print(f"🔎 Searching for hotels in {city}...")
     
-    # (Existing Booking.com Logic with Retry)
     try:
         # 1. Get Location ID
         loc_url = "https://booking-com.p.rapidapi.com/v1/hotels/locations"
@@ -202,15 +207,20 @@ def search_hotels(state: AgentState):
             "filter_by_currency": "USD", "order_by": "price", "locale": "en-us"
         }
         
+        # Retry Logic
         max_retries = 3
         raw_data = []
         for attempt in range(max_retries):
             try:
                 r = requests.get(search_url, headers=headers, params=params, timeout=15)
+                r.raise_for_status()
                 raw_data = r.json().get("result", [])[:10]
                 break
             except:
-                time.sleep(2)
+                if attempt < max_retries - 1:
+                    time.sleep(2)
+                    continue
+                return {"messages": [AIMessage(content="😔 The hotel service is busy. Please try again.")]}
         
         # Filter and Format
         final_list = []
@@ -252,7 +262,7 @@ def select_room(state: AgentState):
     return {}
 
 def validate_booking(state: AgentState):
-    # Safety Check
+    # Safety Check: Guardrail
     if state.get("final_price") > state.get("budget_max", 10000) * 1.2:
         return {"messages": [AIMessage(content="⚠️ Wait! This room is significantly over your budget. confirm?")]}
     return {}
