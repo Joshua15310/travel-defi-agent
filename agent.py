@@ -15,7 +15,6 @@ from pydantic import BaseModel, Field
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 
-# Ensure you have a warden_client.py file in the same folder
 import warden_client
 
 load_dotenv()
@@ -123,7 +122,6 @@ def parse_intent(state: AgentState):
     
     # --- RESET LOGIC ---
     if "reset" in last_msg or "start over" in last_msg:
-        print("PRINT: User triggered RESET.")
         return {
             "destination": None, "suggested_cities": [], "check_in": None, "check_out": None,
             "guests": None, "budget_max": None, "hotels": [], "hotel_cursor": 0,
@@ -132,12 +130,11 @@ def parse_intent(state: AgentState):
             "messages": [AIMessage(content="🔄 System reset. Where are we going next?")]
         }
 
-    # --- SELECTION CHECK ---
+    # --- SELECTION CHECK (Before LLM to catch 'book first one') ---
     is_selecting_room = state.get("selected_hotel") and state.get("room_options")
     if state.get("hotels") and not is_selecting_room:
         selection_idx = extract_hotel_selection(last_msg)
         if selection_idx is not None and 0 <= selection_idx < len(state["hotels"]):
-            print(f"PRINT: User selected hotel index {selection_idx}")
             return {"selected_hotel": state["hotels"][selection_idx], "room_options": [], "waiting_for_booking_confirmation": False}
 
     # --- LLM EXTRACTION ---
@@ -161,16 +158,21 @@ def parse_intent(state: AgentState):
             new_budget = current_budget * 1.5
             intent_data.update({"budget_max": new_budget, "hotel_cursor": 0, "hotels": [], "messages": [AIMessage(content=f"💎 Budget increased to {state.get('currency_symbol','$')}{int(new_budget)}. Searching...")]})
         
-        # Recommendation Logic
+        # --- RECOMMENDATION LOGIC (FIXED) ---
+        # Only recommend if explicitly asked (wants_different_city) 
+        # OR if the LLM inferred a destination from a request like "pick a place".
+        # We REMOVED the "or (not destination)" check that was firing on "Hello".
         past_cities = state.get("suggested_cities", [])
-        wants_rec = intent.wants_different_city or (not state.get("destination") and not intent.destination)
-        if wants_rec and not intent.budget_change:
+        
+        if intent.wants_different_city and not intent.budget_change:
             if state.get("destination") and state.get("destination") not in past_cities: past_cities.append(state.get("destination"))
             next_city = next((c for c in REC_QUEUE if c not in past_cities), None)
             if next_city:
                 intent_data.update({"destination": next_city, "suggested_cities": past_cities + [next_city], "hotel_cursor": 0, "hotels": [], "selected_hotel": None, "messages": [AIMessage(content=f"Let's check **{next_city}**...")]})
             else:
                 intent_data["messages"] = [AIMessage(content="I'm out of suggestions! Do you have a city in mind?")]
+        
+        # Standard Destination Set (User named it, or LLM inferred it from "pick a place")
         elif intent.destination:
             intent_data.update({"destination": intent.destination.title(), "hotel_cursor": 0})
 
@@ -182,7 +184,7 @@ def parse_intent(state: AgentState):
             intent_data["currency"] = intent.currency.upper()
             intent_data["currency_symbol"] = {"USD": "$", "GBP": "£", "EUR": "€"}.get(intent.currency.upper(), "$")
 
-    except Exception as e: print(f"PRINT: LLM Error {e}")
+    except Exception as e: print(f"LLM Error {e}")
 
     # Confirmation Logic
     if state.get("waiting_for_booking_confirmation"):
@@ -238,7 +240,6 @@ def search_hotels(state: AgentState):
     
     if not raw_data:
         try:
-            print(f"PRINT: Fetching API for {city}")
             headers = {"X-RapidAPI-Key": BOOKING_KEY, "X-RapidAPI-Host": "booking-com.p.rapidapi.com"}
             # Location ID
             r1 = requests.get("https://booking-com.p.rapidapi.com/v1/hotels/locations", headers=headers, params={"name": city, "locale": "en-us"})
@@ -254,7 +255,7 @@ def search_hotels(state: AgentState):
                 r2 = requests.get("https://booking-com.p.rapidapi.com/v1/hotels/search", headers=headers, params=params)
                 raw_data = r2.json().get("result", [])[:40]
                 HOTEL_CACHE[cache_key] = {"timestamp": time.time(), "data": raw_data}
-        except Exception as e: print(f"PRINT: API Error {e}")
+        except Exception: pass
 
     try:
         d1 = datetime.strptime(state["check_in"], "%Y-%m-%d")
@@ -277,7 +278,7 @@ def search_hotels(state: AgentState):
     # Filter & Sort
     budget = state.get("budget_max", 10000)
     valid = [h for h in processed if h["total"] <= budget]
-    if not valid: valid = sorted(processed, key=lambda x: x["price"])[:20] # Fallback
+    if not valid: valid = sorted(processed, key=lambda x: x["price"])[:20] 
     else: valid.sort(key=lambda x: (x["stars"], x["price"]), reverse=(budget>200))
     
     batch = valid[cursor : cursor + 5]
@@ -291,14 +292,13 @@ def select_room(state: AgentState):
     if state.get("selected_hotel") and not state.get("room_options"):
         h = state["selected_hotel"]
         sym = state.get("currency_symbol", "$")
-        # Generate Dummy Rooms
+        # Dummy Rooms
         opts = [{"type": "Standard Room", "price": h["total"]}, {"type": "Suite", "price": h["total"]*1.5}]
         msg = "\n".join([f"{i+1}. {r['type']} - {sym}{r['price']:.2f}" for i, r in enumerate(opts)])
         return {"room_options": opts, "messages": [AIMessage(content=f"Hotel: **{h['name']}**. Pick a room:\n{msg}")]}
     
-    # Room Selection Logic
     last_msg = get_message_text(state["messages"][-1]).lower()
-    idx = extract_hotel_selection(last_msg) # Reuse logic for room index
+    idx = extract_hotel_selection(last_msg) 
     options = state.get("room_options", [])
     
     selected_room = None
@@ -317,18 +317,15 @@ def select_room(state: AgentState):
 def book_hotel(state: AgentState):
     if not state.get("waiting_for_booking_confirmation"): return {}
     details = f"{state['selected_hotel']['name']} - {state['final_room_type']}"
-    print(f"PRINT: Booking {details}")
     res = warden_client.submit_booking(details, state["final_total_price_usd"], state["destination"], 0.0)
     tx = res.get("tx_hash", "0xMOCK")
     return {"final_status": "Booked", "waiting_for_booking_confirmation": False, "messages": [AIMessage(content=f"✅ Booked! ID: {res.get('booking_ref','???')}\nTX: https://basescan.org/tx/{tx}")]}
 
-# --- 5. Routing (THE FIX) ---
+# --- 5. Routing ---
 def route_step(state):
-    print(f"PRINT: Routing... ReqComplete={state.get('requirements_complete')} Selected={state.get('selected_hotel') is not None}")
-    
     if state.get("info_request"): return "consultant"
     
-    # FIX: If requirements missing, STOP and wait for user.
+    # STOP if requirements are missing
     if not state.get("requirements_complete"): return "end" 
     
     if state.get("selected_hotel"): return "select_room"
@@ -336,13 +333,9 @@ def route_step(state):
     if state.get("final_room_type"):
         last = get_message_text(state["messages"][-1]).lower()
         if any(w in last for w in ["yes", "confirm"]): return "book"
-        return "end" # Wait for confirmation
+        return "end"
         
     if not state.get("hotels"): return "search"
-    
-    # Fallback: If we have hotels but no selection, assume browsing.
-    # If users says "Next", parse_intent cleared hotels, so we hit 'search'.
-    # If user says gibberish, we show select_room prompt (which asks for selection).
     return "select_room"
 
 # --- 6. Graph ---
