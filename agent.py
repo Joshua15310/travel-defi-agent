@@ -104,10 +104,7 @@ def parse_intent(state: AgentState):
     llm = get_llm()
     structured_llm = llm.with_structured_output(TravelIntent)
     
-    system_prompt = f"""
-    You are an intelligent travel assistant. Today is {today}.
-    Analyze the conversation history. Extract travel details.
-    """
+    system_prompt = f"You are an intelligent travel assistant. Today is {today}. Analyze the conversation and extract travel details."
     
     try:
         intent: TravelIntent = structured_llm.invoke([SystemMessage(content=system_prompt)] + messages)
@@ -129,7 +126,6 @@ def parse_intent(state: AgentState):
                 updates["selected_hotel"] = state["hotels"][idx]
 
         return updates
-
     except Exception as e:
         print(f"LLM Error: {e}")
         return {} 
@@ -152,49 +148,47 @@ def gather_requirements(state: AgentState):
     ])
     
     chain = prompt | llm
-    response = chain.invoke({
-        "missing_fields": ", ".join(missing),
-        "messages": state.get("messages", [])
-    })
-    
+    response = chain.invoke({"missing_fields": ", ".join(missing), "messages": state.get("messages", [])})
     return {"requirements_complete": False, "messages": [response]}
 
-# --- 6. Node: Search Hotels (With Smart Pivot) ---
-def _fetch_hotels_from_api(city, check_in, check_out, guests):
-    """Helper function to execute raw API search logic."""
+# --- 6. Node: Search Hotels (Logic Fixed: Added room_number) ---
+def _fetch_hotels_from_api(city, check_in, check_out, guests, rooms):
+    """Executes raw API search logic."""
     try:
         headers = {"X-RapidAPI-Key": BOOKING_KEY, "X-RapidAPI-Host": "booking-com.p.rapidapi.com"}
-        
-        # 1. Get Location ID
         r = requests.get("https://booking-com.p.rapidapi.com/v1/hotels/locations", 
                         headers=headers, params={"name": city, "locale": "en-us"}, timeout=10)
         data = r.json()
-        if not data: return []
+        if not data: 
+            print(f"⚠️ API: No location ID found for {city}")
+            return []
         
         dest_id, dest_type = data[0].get("dest_id"), data[0].get("dest_type")
-
-        # 2. Search (with Retry)
+        
+        # DEBUG: Print params to verify dates
+        print(f"🔎 API CALL: {city} (ID: {dest_id}) | Dates: {check_in} to {check_out} | Guests: {guests}")
+        
         params = {
             "dest_id": dest_id, "dest_type": dest_type,
             "checkin_date": check_in, "checkout_date": check_out,
-            "adults_number": str(guests), "units": "metric", 
+            "adults_number": str(guests), 
+            "room_number": str(rooms),  # <--- FIXED: Re-added room_number
+            "units": "metric", 
             "filter_by_currency": "USD", "order_by": "price", "locale": "en-us"
         }
         
         raw_data = []
         for attempt in range(3):
             try:
-                r = requests.get("https://booking-com.p.rapidapi.com/v1/hotels/search", 
+                res = requests.get("https://booking-com.p.rapidapi.com/v1/hotels/search", 
                                 headers=headers, params=params, timeout=15)
-                r.raise_for_status()
-                raw_data = r.json().get("result", [])[:15]
+                raw_data = res.json().get("result", [])[:15]
                 break
             except:
                 if attempt < 2: time.sleep(2)
-        
         return raw_data
-    except Exception as e:
-        print(f"API Error for {city}: {e}")
+    except Exception as e: 
+        print(f"API Error: {e}")
         return []
 
 def search_hotels(state: AgentState):
@@ -202,48 +196,38 @@ def search_hotels(state: AgentState):
     if state.get("hotels"): return {} 
     
     city = state.get("destination")
-    print(f"🔎 Searching for hotels in {city}...")
+    rooms = state.get("rooms", 1)
     
-    # Calculate nights
     try:
         d1 = datetime.strptime(state["check_in"], "%Y-%m-%d")
         d2 = datetime.strptime(state["check_out"], "%Y-%m-%d")
         nights = max(1, (d2 - d1).days)
     except: nights = 1
 
-    # --- ATTEMPT 1: Search Original City ---
-    raw_data = _fetch_hotels_from_api(city, state["check_in"], state["check_out"], state["guests"])
+    # Attempt 1: Search Original
+    raw_data = _fetch_hotels_from_api(city, state["check_in"], state["check_out"], state["guests"], rooms)
     used_city = city
     
-    # --- ATTEMPT 2: Smart Pivot (If 0 results) ---
+    # Attempt 2: Smart Pivot (If results are 0)
     if not raw_data:
-        print(f"⚠️ Zero results for '{city}'. Triggering Smart Pivot...")
-        try:
-            llm = get_llm()
-            pivot_prompt = f"I searched for hotels in '{city}' and found 0 results. Name the SINGLE best specific city, district, or island inside or near '{city}' that definitely has hotels. Return ONLY the name."
-            new_city = llm.invoke(pivot_prompt).content.strip().replace(".", "")
-            
-            print(f"🔄 Pivoting search to: {new_city}")
-            raw_data = _fetch_hotels_from_api(new_city, state["check_in"], state["check_out"], state["guests"])
-            
-            if raw_data:
-                used_city = new_city # Update city name for the user message
-        except Exception as e:
-            print(f"Pivot failed: {e}")
+        llm = get_llm()
+        pivot_prompt = f"The user wants hotels in '{city}' but search failed. Name the SINGLE best city or island hub inside/near '{city}' with many hotels. Return ONLY the name."
+        new_city = llm.invoke(pivot_prompt).content.strip().replace(".", "")
+        print(f"🔄 Pivoting to: {new_city}")
+        
+        raw_data = _fetch_hotels_from_api(new_city, state["check_in"], state["check_out"], state["guests"], rooms)
+        if raw_data: used_city = new_city
 
-    # Process Results
+    # Filter and Sort
     all_hotels = []
     for h in raw_data:
         try: 
             total_price = float(h.get("min_total_price", 0))
             if total_price == 0: continue
             price_per_night = round(total_price / nights, 2)
-            
             all_hotels.append({
-                "name": h.get("hotel_name"), 
-                "price": price_per_night,
-                "total": total_price,
-                "rating": h.get("review_score", "N/A")
+                "name": h.get("hotel_name"), "price": price_per_night,
+                "total": total_price, "rating": h.get("review_score", "N/A")
             })
         except: pass
     
@@ -256,18 +240,16 @@ def search_hotels(state: AgentState):
     if not final_list:
         final_list = all_hotels[:3]
         if not final_list:
-            return {"messages": [AIMessage(content=f"😔 I couldn't find any hotels in '{city}' or nearby. Maybe try different dates?")]}
-        min_found = final_list[0]['price']
-        msg_intro = f"⚠️ I couldn't find anything under **${budget}** in {used_city}. The cheapest options start at **${min_found}/night**:"
+            return {"messages": [AIMessage(content=f"😔 I couldn't find any hotels in '{city}' or nearby.")]}
+        msg_intro = f"⚠️ I couldn't find anything under **${budget}** in {used_city}. Cheapest options start at **${final_list[0]['price']}/night**:"
     else:
         if used_city != city:
             msg_intro = f"ℹ️ I couldn't find hotels directly in '{city}', but I found these great options nearby in **{used_city}**:"
         else:
-            msg_intro = f"🎉 I found these options in {city} under **${budget}/night**:"
+            msg_intro = f"🎉 Options in **{used_city}** under **${budget}/night**:"
 
     options = "\n".join([f"{i+1}. {h['name']} - ${h['price']}/night (Rating: {h['rating']})" for i, h in enumerate(final_list)])
     msg = f"{msg_intro}\n\n{options}\n\nReply with the number to book."
-    
     return {"hotels": final_list, "messages": [AIMessage(content=msg)]}
 
 # --- 7. Node: Select Room & Book ---
@@ -280,7 +262,6 @@ def select_room(state: AgentState):
         }
     
     last_msg = get_message_text(state["messages"][-1]).lower()
-    
     if "suite" in last_msg:
         return {"final_room_type": "Suite", "final_price": state["selected_hotel"]["price"]*1.5}
     if "standard" in last_msg or "1" in last_msg:
@@ -294,10 +275,8 @@ def validate_booking(state: AgentState):
 
 def book_hotel(state: AgentState):
     if not state.get("final_room_type"): return {}
-    
     details = f"{state['selected_hotel']['name']} ({state['final_room_type']})"
     res = warden_client.submit_booking(details, state["final_price"], state["destination"], 0.0)
-    
     tx = res.get("tx_hash", "0xMOCK")
     msg = f"✅ Booked {details}!\nTransaction: {tx}\n\nAnything else?"
     return {"final_status": "Booked", "messages": [AIMessage(content=msg)]}
@@ -312,22 +291,16 @@ def route_step(state):
     return "book"
 
 workflow = StateGraph(AgentState)
-workflow.add_node("parse", parse_intent)
-workflow.add_node("gather", gather_requirements)
-workflow.add_node("search", search_hotels)
-workflow.add_node("select_room", select_room)
-workflow.add_node("validate", validate_booking)
-workflow.add_node("book", book_hotel)
+workflow.add_node("parse", parse_intent); workflow.add_node("gather", gather_requirements)
+workflow.add_node("search", search_hotels); workflow.add_node("select_room", select_room)
+workflow.add_node("validate", validate_booking); workflow.add_node("book", book_hotel)
 
 workflow.set_entry_point("parse")
 workflow.add_edge("parse", "gather")
 workflow.add_conditional_edges("gather", route_step, {
     "end": END, "search": "search", "select_room": "select_room", "validate": "validate", "book": "book"
 })
-workflow.add_edge("search", END)
-workflow.add_edge("select_room", END)
-workflow.add_edge("validate", "book")
-workflow.add_edge("book", END)
+workflow.add_edge("search", END); workflow.add_edge("select_room", END)
+workflow.add_edge("validate", "book"); workflow.add_edge("book", END)
 
-memory = MemorySaver()
-workflow_app = workflow.compile(checkpointer=memory)
+memory = MemorySaver(); workflow_app = workflow.compile(checkpointer=memory)
