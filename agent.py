@@ -1,15 +1,16 @@
 # agent.py
 import os
 import requests
-import random
-import operator
-import re
 import time
-from dotenv import load_dotenv
+import operator
 from datetime import date, timedelta, datetime
-from typing import TypedDict, List, Union, Optional, Annotated
+from typing import TypedDict, List, Optional, Annotated
 
-from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
+from dotenv import load_dotenv
+from langchain_core.messages import HumanMessage, AIMessage, BaseMessage, SystemMessage
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_openai import ChatOpenAI
+from langchain_core.pydantic_v1 import BaseModel, Field
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 
@@ -17,428 +18,292 @@ import warden_client
 
 load_dotenv()
 
+# --- CONFIGURATION ---
 BOOKING_KEY = os.getenv("BOOKING_API_KEY")
+# We use ChatOpenAI client but point it to xAI's base_url for Grok
+LLM_BASE_URL = "https://api.x.ai/v1" 
+LLM_API_KEY = os.getenv("GROK_API_KEY") or os.getenv("OPENAI_API_KEY")
+LLM_MODEL = "grok-beta" if os.getenv("GROK_API_KEY") else "gpt-4o-mini"
 
-# --- 1. Enhanced State Management ---
+# --- 1. State Definition ---
 class AgentState(TypedDict, total=False):
     messages: Annotated[List[BaseMessage], operator.add]
-    user_query: str
     destination: str
     check_in: str
     check_out: str
     guests: int
     rooms: int
-    budget_min: float
     budget_max: float
+    budget_min: float
     hotels: List[dict]
     selected_hotel: dict
     room_options: List[dict]
     final_room_type: str
     final_price: float
-    needs_swap: bool
-    tx_hash: str
-    confirmation_number: str
     final_status: str
+    # Internal flags
     date_just_set: bool 
+    requirements_complete: bool
 
-# --- 2. Helpers ---
+# --- 2. Structured Output Schema (The "Brain" Structure) ---
+class TravelIntent(BaseModel):
+    """Structure for extracting travel details from natural conversation."""
+    destination: Optional[str] = Field(description="City or country name. None if asking for suggestions.")
+    check_in: Optional[str] = Field(description="YYYY-MM-DD date. Calculate from relative terms like 'next friday'.")
+    guests: Optional[int] = Field(description="Number of people. Infer from context (e.g., 'me and wife' = 2).")
+    budget_max: Optional[float] = Field(description="Maximum price per night in USD.")
+    user_intent_type: str = Field(description="One of: 'booking_request', 'general_chat', 'asking_suggestion', 'reset'")
 
-def parse_date(text: str) -> str:
-    text = text.lower().strip()
-    today = date.today()
-    try:
-        words = text.replace(",", " ").split()
-        for w in words:
-            try:
-                return datetime.strptime(w, "%Y-%m-%d").strftime("%Y-%m-%d")
-            except: continue
-    except: pass
-
-    weekdays = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
-    for i, day in enumerate(weekdays):
-        if day in text:
-            current_weekday = today.weekday()
-            days_ahead = i - current_weekday
-            if days_ahead <= 0: days_ahead += 7
-            return (today + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
-
-    if "tomorrow" in text: return (today + timedelta(days=1)).strftime("%Y-%m-%d")
-    if "next week" in text: return (today + timedelta(days=7)).strftime("%Y-%m-%d")
-    return (today + timedelta(days=1)).strftime("%Y-%m-%d")
-
-def extract_text(content) -> str:
-    if isinstance(content, str): return content
-    if isinstance(content, list): return " ".join([extract_text(item) for item in content])
-    if isinstance(content, dict): return content.get("text", str(content))
-    return str(content)
-
-# --- MERGED CONTEXTUAL HINT LOGIC ---
-def get_smart_hint(state: AgentState) -> str:
-    """Generates a dynamic hint based on what the user has provided so far."""
-    dest = state.get("destination", "the city")
+# --- 3. Helpers ---
+def get_llm():
+    """Initializes the LLM connection (Grok or OpenAI)."""
+    if not LLM_API_KEY:
+        raise ValueError("⚠️ Missing GROK_API_KEY or OPENAI_API_KEY in .env")
     
-    if not state.get("destination"):
-        return "\n\n(💡 Tip: Popular spots right now include Paris, Tokyo, and New York)"
-    
-    if not state.get("check_in"):
-        return f"\n\n(💡 Tip: Booking at least 7 days in advance for {dest} usually secures better rates)"
-        
-    if not state.get("guests"):
-        return "\n\n(💡 Tip: You can say '2 adults, 1 child' or just '3 guests')"
-        
-    if state.get("budget_max") is None:
-        return f"\n\n(💡 Tip: Average prices in {dest} trend around $150-$250/night. You can say 'no limit' to see luxury options)"
-        
-    return ""
+    return ChatOpenAI(
+        model=LLM_MODEL,
+        api_key=LLM_API_KEY,
+        base_url=LLM_BASE_URL if "grok" in LLM_MODEL else None,
+        temperature=0.7 # Slight creativity for friendly conversation
+    )
 
-# --- 3. Parsing Logic ---
-
-def parse_budget(text: str):
-    text = text.lower().replace("$", "").replace(",", "")
-    updates = {}
-    if "no limit" in text or "unlimited" in text:
-        updates["budget_min"] = 0.0
-        updates["budget_max"] = 20000.0
-        return updates
-    
-    nums = re.findall(r'\d+', text)
-    is_likely_budget = "budget" in text or "price" in text or "cost" in text or any(float(n) > 30 for n in nums)
-    
-    if len(nums) >= 2 and is_likely_budget:
-        updates["budget_min"] = float(nums[0])
-        updates["budget_max"] = float(nums[1])
-        return updates
-
-    under_match = re.search(r'(?:under|below|less than)\s*(\d+)', text)
-    if under_match:
-        updates["budget_min"] = 0.0
-        updates["budget_max"] = float(under_match.group(1))
-        return updates
-
-    over_match = re.search(r'(?:above|over|more than)\s*(\d+)', text)
-    if over_match:
-        updates["budget_min"] = float(over_match.group(1))
-        updates["budget_max"] = 20000.0
-        return updates
-        
-    if text.strip().isdigit():
-        val = float(text)
-        if val > 30: 
-            updates["budget_min"] = 0.0
-            updates["budget_max"] = val
-            return updates
-    return {}
-
-# --- 4. Node: Intent Parser ---
+# --- 4. Node: Intelligent Intent Parser (Grok Powered) ---
 def parse_intent(state: AgentState):
+    """Uses Grok to understand natural language and extract booking fields."""
     messages = state.get("messages", [])
     if not messages: return {}
     
-    last_user_text = ""
-    last_ai_text = ""
-    
-    for m in reversed(messages):
-        m_type = getattr(m, 'type', '') or (m.get('type') if isinstance(m, dict) else '')
-        if m_type == 'human' or isinstance(m, HumanMessage):
-            last_user_text = extract_text(getattr(m, 'content', '') or m.get('content', '')).strip()
-            break
-            
-    for m in reversed(messages):
-        m_type = getattr(m, 'type', '') or (m.get('type') if isinstance(m, dict) else '')
-        if m_type == 'ai' or isinstance(m, AIMessage):
-            last_ai_text = extract_text(getattr(m, 'content', '') or m.get('content', '')).strip()
-            break
-
-    updates = {}
-    text = last_user_text
-    lowered_text = text.lower()
-    lowered_ai = last_ai_text.lower()
-    updates["date_just_set"] = False 
-
-    if not text: return {}
-
-    # --- FEATURE 1: GLOBAL RESET ---
-    # Detects "start over", "reset", "restart" and wipes state
-    if "start over" in lowered_text or "reset" in lowered_text or "restart" in lowered_text:
+    # 1. Check for Reset first (Simple keyword check is faster/safer)
+    last_msg = messages[-1].content.lower()
+    if "start over" in last_msg or "reset" in last_msg:
         return {
-            "destination": "", "check_in": "", "check_out": "", "guests": 0, "rooms": 0,
-            "budget_min": 0.0, "budget_max": None, "hotels": [], "selected_hotel": {},
-            "room_options": [], "final_room_type": "", "final_price": 0.0,
-            "messages": [AIMessage(content="🔄 System reset. Let's start over! Where would you like to go?")]
+            "destination": None, "check_in": None, "check_out": None,
+            "guests": None, "budget_max": None, "hotels": [],
+            "messages": [AIMessage(content="🔄 System reset. Where are we going next?")]
         }
 
-    # --- FIX 1: Explicitly handle "Change Location" ---
-    if "change" in lowered_text:
-        if "location" in lowered_text or "city" in lowered_text or "place" in lowered_text or "country" in lowered_text:
-            updates["destination"] = ""
-            updates["hotels"] = []
-            updates["selected_hotel"] = {}
-            # If they provided the new city in the same sentence (e.g. "Change city to Paris")
-            for token in [" to ", " in "]:
-                if token in lowered_text:
-                    try:
-                        new_dest = text.split(token, 1)[1].strip("?.").title()
-                        if new_dest: updates["destination"] = new_dest
-                    except: pass
-            return updates
+    # 2. Prepare Grok Prompt
+    today = date.today().strftime("%Y-%m-%d")
+    llm = get_llm()
+    
+    # We ask Grok to extract data OR tell us if it's just chat
+    structured_llm = llm.with_structured_output(TravelIntent)
+    
+    system_prompt = f"""
+    You are an intelligent travel assistant. Today is {today}.
+    Analyze the conversation history. Extract travel details into the JSON format.
+    
+    Rules:
+    - If user says "me and my wife", guests = 2.
+    - If user says "next friday", calculate the date YYYY-MM-DD.
+    - If user says "suggest a place", leave destination as null and set type to 'asking_suggestion'.
+    - If user says "hello", set type to 'general_chat'.
+    - Ignore currency symbols, extract numeric budget value.
+    """
+    
+    try:
+        # Pass the full conversation history so Grok understands context
+        intent: TravelIntent = structured_llm.invoke([SystemMessage(content=system_prompt)] + messages)
+        
+        updates = {}
+        if intent.destination: updates["destination"] = intent.destination.title()
+        if intent.check_in: 
+            updates["check_in"] = intent.check_in
+            # Auto-set checkout to +2 days if not specified (simplification)
+            try:
+                dt = datetime.strptime(intent.check_in, "%Y-%m-%d")
+                updates["check_out"] = (dt + timedelta(days=2)).strftime("%Y-%m-%d")
+            except: pass
+        if intent.guests: updates["guests"] = intent.guests
+        if intent.budget_max: updates["budget_max"] = intent.budget_max
+        
+        # Handle "Number selection" for hotels (Manual fallback for stability)
+        if state.get("hotels") and last_msg.strip().isdigit():
+            idx = int(last_msg) - 1
+            if 0 <= idx < len(state["hotels"]):
+                updates["selected_hotel"] = state["hotels"][idx]
 
-    if "change" in lowered_text and ("date" in lowered_text or "day" in lowered_text):
-        updates["check_in"] = ""
-        updates["hotels"] = []
         return updates
-    if "change" in lowered_text and "budget" in lowered_text:
-        updates["budget_max"] = None
-        updates["hotels"] = []
-        return updates
 
-    # PRIORITY: GUESTS
-    is_guest_answer = "guest" in lowered_text or "room" in lowered_text or "how many" in lowered_ai
-    if is_guest_answer:
-        nums = [int(s) for s in text.split() if s.isdigit()]
-        if nums:
-            updates["guests"] = nums[0]
-            updates["rooms"] = nums[1] if len(nums) > 1 else 1
-            updates["hotels"] = []
-            return updates 
+    except Exception as e:
+        print(f"LLM Error: {e}")
+        return {} # Fallback to no updates if LLM fails
 
-    budget_updates = parse_budget(text)
-    if budget_updates:
-        updates.update(budget_updates)
-        updates["hotels"] = [] 
-        return updates
-
-    date_kws = ["jan", "feb", "mar", "apr", "tomorrow", "next", "monday", "tuesday", "wednesday", "thursday", "friday", "year", "week"]
-    is_date_input = any(k in lowered_text for k in date_kws) or (any(char.isdigit() for char in text) and ("-" in text or "/" in text))
-    if "check-in" in lowered_ai or is_date_input:
-        parsed = parse_date(text)
-        if parsed:
-            updates["check_in"] = parsed
-            updates["check_out"] = (datetime.strptime(parsed, "%Y-%m-%d") + timedelta(days=2)).strftime("%Y-%m-%d")
-            updates["hotels"] = []
-            updates["date_just_set"] = True
-            return updates
-
-    if state.get("hotels") and text.isdigit():
-        idx = int(text) - 1
-        if not state.get("selected_hotel") and 0 <= idx < len(state["hotels"]):
-            updates["selected_hotel"] = state["hotels"][idx]
-            return updates
-        elif not state.get("final_room_type"):
-            options = state.get("room_options", [])
-            if 0 <= idx < len(options):
-                updates["final_room_type"] = options[idx]["type"]
-                updates["final_price"] = options[idx]["price"]
-                return updates
-
-    # --- FIX 2: Better City Extraction (Remove "instead", "please") ---
-    new_dest = None
-    if not state.get("destination") or " in " in lowered_text or " to " in lowered_text:
-        for token in [" in ", " to ", " at ", "about "]:
-            if token in lowered_text:
-                try:
-                    raw_candidate = text.split(token, 1)[1].strip("?.").title()
-                    # Clean up the candidate string
-                    words = raw_candidate.split()
-                    clean_words = [w for w in words if w.lower() not in ["instead", "please", "now", "actually", "thanks"]]
-                    candidate = " ".join(clean_words)
-                    
-                    forbidden = ["hi", "hello", "start", "budget", "usd", "limit", "no", "yes", "change", "date"] + date_kws
-                    if len(candidate) > 2 and not any(k in candidate.lower() for k in forbidden):
-                        new_dest = candidate
-                        break
-                except: pass
-        if not new_dest and not state.get("destination"):
-            forbidden = ["hi", "hello", "start", "budget", "usd", "limit", "no", "yes", "change", "date"] + date_kws
-            if not any(f in lowered_text for f in forbidden) and len(text.split()) < 4 and not any(char.isdigit() for char in text):
-                new_dest = text.title()
-
-    if new_dest:
-        updates["destination"] = new_dest
-        updates["hotels"] = []
-        updates["selected_hotel"] = {}
-    return updates
-
-# --- 5. Node: Gather Requirements (Updated with Hints) ---
+# --- 5. Node: Conversational Gatherer (Grok Powered) ---
 def gather_requirements(state: AgentState):
-    # Fetch contextual hint based on missing data
-    hint = get_smart_hint(state)
+    """Decides if we have enough info. If not, Grok generates a friendly question."""
     
-    if not state.get("destination"):
-        return {"messages": [AIMessage(content=f"👋 Welcome to Warden Travel! Which City or Country are you visiting?{hint}")]}
-    
-    if not state.get("check_in"):
-        return {"messages": [AIMessage(content=f"Great, {state['destination']} is beautiful! 📅 When would you like to Check-in? (YYYY-MM-DD) or say 'Monday'{hint}")]}
-    
-    if not state.get("guests"):
-        intro = f"The date for {state['destination']} is {state['check_in']}, got it.\n\n" if state.get("date_just_set") else ""
-        return {"messages": [AIMessage(content=f"{intro}👥 How many guests and how many rooms do you need?{hint}\n\nExamples:\n- 2 guests 1 room\n- 3 guests 3 rooms\n- 1 guests 1 rooms")]}
-    
-    if state.get("budget_max") is None:
-        return {"messages": [AIMessage(content=f"💰 What is your budget per night?{hint}\n\nExamples:\n- My budget is between \$400 and $500\n- My budget is between \$400 to \$500\n- My budget is under $300\n- My budget is above $300\n- no limit")]}
-    
-    return {}
+    # Check what is missing
+    missing = []
+    if not state.get("destination"): missing.append("Destination (City/Country)")
+    if not state.get("check_in"): missing.append("Check-in Date")
+    if not state.get("guests"): missing.append("Number of Guests")
+    if state.get("budget_max") is None: missing.append("Budget per night")
 
-# --- 6. Node: Search Hotels ---
-def get_destination_data(city):
-    if not BOOKING_KEY: return None, None
-    try:
-        url = "https://booking-com.p.rapidapi.com/v1/hotels/locations"
-        r = requests.get(url, headers={"X-RapidAPI-Key": BOOKING_KEY, "X-RapidAPI-Host": "booking-com.p.rapidapi.com"}, params={"name": city, "locale": "en-us"}, timeout=10)
-        data = r.json()
-        if data: return data[0].get("dest_id"), data[0].get("dest_type")
-    except: pass
-    return None, None
+    # If nothing missing, we are ready to search!
+    if not missing:
+        return {"requirements_complete": True}
 
+    # If info is missing, ask Grok to generate the specific question
+    llm = get_llm()
+    current_dest = state.get("destination", "unknown place")
+    
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", """You are Nomad, a witty and friendly travel agent. 
+        The user wants to travel but some details are missing: {missing_fields}.
+        Current known details: {state_summary}.
+        
+        Your Goal:
+        1. If the user asked for suggestions (e.g., "Where should I go?"), suggest 2-3 exciting destinations based on their vibe, then ask which one they prefer.
+        2. If they just said "Hello", greet them warmly and ask where they want to go.
+        3. Otherwise, politely ask for the missing details in a conversational way (don't act like a robot form).
+        4. Keep it short (under 2 sentences).
+        """),
+        MessagesPlaceholder(variable_name="messages"),
+    ])
+    
+    chain = prompt | llm
+    
+    # We pass the conversation history so Grok knows if the user just asked a question
+    response = chain.invoke({
+        "missing_fields": ", ".join(missing),
+        "state_summary": str(state),
+        "messages": state.get("messages", [])
+    })
+    
+    return {"requirements_complete": False, "messages": [response]}
+
+# --- 6. Node: Search Hotels (API + Retry) ---
 def search_hotels(state: AgentState):
-    if state.get("hotels"): return {}
-    city, checkin, guests = state.get("destination"), state.get("check_in"), state.get("guests", 1)
-    b_min, b_max = state.get("budget_min", 0), state.get("budget_max", 20000) 
-    rooms = state.get("rooms", 1)
+    # Only run if requirements are complete
+    if not state.get("requirements_complete"): return {}
+    if state.get("hotels"): return {} # Don't search twice
     
-    dest_id, dest_type = get_destination_data(city)
-    if not dest_id: return {"messages": [AIMessage(content=f"⚠️ Could not find location '{city}'.")]}
+    city = state.get("destination")
+    print(f"🔎 Searching for hotels in {city}...")
     
-    url = "https://booking-com.p.rapidapi.com/v1/hotels/search"
-    # Added locale and room_number
-    params = {
-        "dest_id": str(dest_id), 
-        "dest_type": dest_type, 
-        "checkin_date": checkin, 
-        "checkout_date": state["check_out"], 
-        "adults_number": str(guests),
-        "room_number": str(rooms),
-        "units": "metric", 
-        "filter_by_currency": "USD", 
-        "order_by": "price",
-        "locale": "en-us"
-    }
-
-# --- UPGRADE #1: RETRY LOGIC ---
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            r = requests.get(url, headers={"X-RapidAPI-Key": BOOKING_KEY, "X-RapidAPI-Host": "booking-com.p.rapidapi.com"}, params=params, timeout=20)
-            r.raise_for_status() # This triggers the 'except' block if the API returns an error
-            raw_data = r.json().get("result", [])[:100]
-            break # Success! Exit the retry loop
-        except (requests.exceptions.RequestException, ValueError) as e:
-            if attempt < max_retries - 1:
-                time.sleep(2) # Wait 2 seconds before the next attempt
-                continue
-            return {"messages": [AIMessage(content="😔 The hotel service is temporarily unresponsive. Please try again in a few seconds.")]}
-        
+    # (Existing Booking.com Logic with Retry)
     try:
-        r = requests.get(url, headers={"X-RapidAPI-Key": BOOKING_KEY, "X-RapidAPI-Host": "booking-com.p.rapidapi.com"}, params=params, timeout=20)
-        raw_data = r.json().get("result", [])[:100]
+        # 1. Get Location ID
+        loc_url = "https://booking-com.p.rapidapi.com/v1/hotels/locations"
+        headers = {"X-RapidAPI-Key": BOOKING_KEY, "X-RapidAPI-Host": "booking-com.p.rapidapi.com"}
+        r = requests.get(loc_url, headers=headers, params={"name": city, "locale": "en-us"}, timeout=10)
+        data = r.json()
+        if not data: return {"messages": [AIMessage(content=f"⚠️ I couldn't find any hotels in '{city}'.")]}
         
-        all_parsed_hotels = []
-        filtered_hotels = []
+        dest_id, dest_type = data[0].get("dest_id"), data[0].get("dest_type")
 
+        # 2. Search Hotels (With Retry)
+        search_url = "https://booking-com.p.rapidapi.com/v1/hotels/search"
+        params = {
+            "dest_id": dest_id, "dest_type": dest_type,
+            "checkin_date": state["check_in"], "checkout_date": state["check_out"],
+            "adults_number": str(state["guests"]), "units": "metric", 
+            "filter_by_currency": "USD", "order_by": "price", "locale": "en-us"
+        }
+        
+        max_retries = 3
+        raw_data = []
+        for attempt in range(max_retries):
+            try:
+                r = requests.get(search_url, headers=headers, params=params, timeout=15)
+                raw_data = r.json().get("result", [])[:10]
+                break
+            except:
+                time.sleep(2)
+        
+        # Filter and Format
+        final_list = []
+        budget = state.get("budget_max", 10000)
+        
         for h in raw_data:
-            try: price = float(h.get("composite_price_breakdown", {}).get("gross_amount", {}).get("value", h.get("min_total_price", 150)))
+            try: price = float(h.get("min_total_price", 150))
             except: price = 150.0
-            
-            # Create Hotel Object
-            name = h.get("hotel_name", "Hotel")
-            score = h.get("review_score", 0) or 0
-            rating = "⭐" * int(round(score/2)) if score else "New"
-            hotel_obj = {"name": name, "price": price, "rating": rating}
-            
-            # Add to full list
-            all_parsed_hotels.append(hotel_obj)
-
-            # Strict Filter
-            if b_min <= price <= b_max:
-                filtered_hotels.append(hotel_obj)
-                if len(filtered_hotels) >= 5: break 
+            if price <= budget:
+                final_list.append({"name": h.get("hotel_name"), "price": price, "rating": h.get("review_score", "N/A")})
+                if len(final_list) >= 5: break
         
-        # --- FIX 3: Escaped Dollar Signs for formatting ---
-        # 1. Success Case
-        if filtered_hotels:
-            final_list = filtered_hotels
-            msg_intro = f"🔎 Found options in {city} for {checkin}:"
-
-        # 2. Fallback Case
-        elif all_parsed_hotels:
-            all_parsed_hotels.sort(key=lambda x: x["price"])
-            final_list = all_parsed_hotels[:5]
-            min_found = final_list[0]['price']
-            msg_intro = f"😔 I couldn't find anything strictly under **\${b_max:.0f}**.\nThe cheapest option starts at **\${min_found:.2f}**.\n\nHere are the lowest price options I found:"
-        
-        # 3. Total Failure Case
-        else:
-            return {"messages": [AIMessage(content=f"😔 No hotels found in {city} at all. Try changing the date or city.")]}
-
-        # Format output with escaped dollar signs
-        options_list = "\n".join([f"- {i+1}. {h['name']} - \${h['price']:.2f} {h['rating']}" for i, h in enumerate(final_list)])
-        msg = f"{msg_intro}\n\n{options_list}\n\nReply with the number to book."
+        if not final_list:
+            return {"messages": [AIMessage(content=f"😔 I found hotels in {city}, but none under ${budget}. Shall we raise the budget?")]}
+            
+        options = "\n".join([f"{i+1}. {h['name']} - ${h['price']}" for i, h in enumerate(final_list)])
+        msg = f"🎉 I found these great options in {city} for {state['check_in']}:\n\n{options}\n\nWhich number should I book for you?"
         return {"hotels": final_list, "messages": [AIMessage(content=msg)]}
 
-    except Exception as e: return {"messages": [AIMessage(content=f"Search Error: {str(e)}")]}
+    except Exception as e:
+        return {"messages": [AIMessage(content=f"⚠️ Search failed: {str(e)}")]}
 
+# --- 7. Node: Select Room & Book (Warden Integration) ---
 def select_room(state: AgentState):
     if state.get("selected_hotel") and not state.get("room_options"):
-        hotel = state["selected_hotel"]
-        base = hotel["price"]
-        room_options = [{"type": "Standard", "price": base}, {"type": "Deluxe", "price": round(base * 1.3, 2)}]
-        # Escaped dollar signs here too
-        rooms_list = "\n".join([f"- {i+1}. {r['type']} - \${r['price']}" for i, r in enumerate(room_options)])
-        msg = f"For {hotel['name']}, select a room:\n{rooms_list}\n\nReply with 1 or 2."
-        return {"room_options": room_options, "messages": [AIMessage(content=msg)]}
+        # Simple simulation of room types
+        h = state["selected_hotel"]
+        return {
+            "room_options": [{"type": "Standard", "price": h["price"]}, {"type": "Suite", "price": h["price"]*1.5}],
+            "messages": [AIMessage(content=f"Great choice! For {h['name']}, do you want the Standard Room (${h['price']}) or the Suite (${h['price']*1.5})?")]
+        }
+    
+    # If user selected room type (via text), we map it here
+    last_msg = state["messages"][-1].content.lower()
+    if "suite" in last_msg:
+        return {"final_room_type": "Suite", "final_price": state["selected_hotel"]["price"]*1.5}
+    if "standard" in last_msg or "1" in last_msg:
+        return {"final_room_type": "Standard", "final_price": state["selected_hotel"]["price"]}
     return {}
 
-# --- UPGRADE #2: SAFETY GUARDRAILS ---
 def validate_booking(state: AgentState):
-    current_price = state.get("final_price", 0)
-    max_budget = state.get("budget_max", 0)
-    check_in_str = state.get("check_in")
-    if max_budget and current_price > (max_budget * 1.15):
-        return {"messages": [AIMessage(content=f"⚠️ Price Alert: Current price (\${current_price}) is over your budget. Please select another room.")]}
-    try:
-        if datetime.strptime(check_in_str, "%Y-%m-%d").date() < date.today():
-            return {"messages": [AIMessage(content="⚠️ Date Error: Check-in is in the past.")]}
-    except: pass
+    # Safety Check
+    if state.get("final_price") > state.get("budget_max", 10000) * 1.2:
+        return {"messages": [AIMessage(content="⚠️ Wait! This room is significantly over your budget. confirm?")]}
     return {}
 
 def book_hotel(state: AgentState):
     if not state.get("final_room_type"): return {}
     
-    # --- FEATURE 2: SMART METADATA IN BOOKING ---
-    # We combine details into the name/string fields since the Warden SDK likely has a fixed signature.
-    # This ensures the check-in dates and guest count are permanently recorded on-chain.
+    # Call Warden SDK
+    details = f"{state['selected_hotel']['name']} ({state['final_room_type']})"
+    res = warden_client.submit_booking(details, state["final_price"], state["destination"], 0.0)
     
-    full_booking_details = f"{state['selected_hotel']['name']} ({state['check_in']} for {state['guests']} Guests)"
-    
-    res = warden_client.submit_booking(
-        full_booking_details,  # Name field now includes dates
-        state["final_price"], 
-        state["destination"], 
-        0.0
-    )
-    
-    tx = res.get("tx_hash", "0xMOCK_TX")
-    # Escaped dollar sign
-    msg = f"🎉 Booking Confirmed!\n\nHotel: {state['selected_hotel']['name']}\nDates: {state['check_in']} to {state['check_out']}\nPrice: \${state['final_price']}\n[View Transaction](https://sepolia.basescan.org/tx/{tx})"
+    tx = res.get("tx_hash", "0xMOCK")
+    msg = f"✅ All done! I've booked the {details} for you.\nTransaction: {tx}\n\nCan I help you with anything else?"
     return {"final_status": "Booked", "messages": [AIMessage(content=msg)]}
 
-# --- 7. Routing ---
+# --- 8. Routing & Graph ---
 def route_step(state):
-    # If destination was cleared by "change location", go back to gather
-    if not state.get("destination"): return "gather"
+    # If we are missing requirements, go back to gather (which talks to user)
+    if not state.get("requirements_complete"):
+        return "end" # We return to user to let them answer the question
     
-    if not state.get("check_in"): return "gather"
-    if not state.get("guests") or state.get("guests") <= 0: return "gather"
-    if state.get("budget_max") is None: return "gather"
-    if not state.get("hotels") and not state.get("selected_hotel"): return "search"
-    if not state.get("selected_hotel"): return END
-    if not state.get("final_room_type"): return "select_room" if not state.get("room_options") else END
+    if not state.get("hotels"): return "search"
+    if not state.get("selected_hotel"): return "end" # Wait for user selection
+    if not state.get("final_room_type"): return "select_room"
+    if state.get("final_status") != "Booked": return "validate"
     return "book"
 
-# --- 8. Workflow ---
 workflow = StateGraph(AgentState)
-workflow.add_node("parse", parse_intent); workflow.add_node("gather", gather_requirements)
-workflow.add_node("search", search_hotels); workflow.add_node("select_room", select_room)
-workflow.add_node("book", book_hotel); workflow.set_entry_point("parse")
-workflow.add_conditional_edges("parse", route_step, {"gather":"gather","search":"search","select_room":"select_room","book":"book",END:END})
-workflow.add_edge("gather", END); workflow.add_edge("search", END); workflow.add_edge("select_room", END); workflow.add_edge("book", END)
-memory = MemorySaver(); workflow_app = workflow.compile(checkpointer=memory)
+workflow.add_node("parse", parse_intent)
+workflow.add_node("gather", gather_requirements)
+workflow.add_node("search", search_hotels)
+workflow.add_node("select_room", select_room)
+workflow.add_node("validate", validate_booking)
+workflow.add_node("book", book_hotel)
+
+workflow.set_entry_point("parse")
+
+# We update the edges to loop efficiently
+workflow.add_edge("parse", "gather")
+# From gather, we check if we need to talk to user or proceed
+workflow.add_conditional_edges("gather", route_step, {
+    "end": END,
+    "search": "search",
+    "select_room": "select_room",
+    "validate": "validate",
+    "book": "book"
+})
+workflow.add_edge("search", END)       # Return results to user
+workflow.add_edge("select_room", END)  # Ask user for room
+workflow.add_edge("validate", "book")  # If valid, go to book
+workflow.add_edge("book", END)
+
+memory = MemorySaver()
+workflow_app = workflow.compile(checkpointer=memory)
