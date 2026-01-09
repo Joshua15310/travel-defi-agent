@@ -67,19 +67,37 @@ def get_llm():
     )
 
 def get_message_text(msg):
-    """Safely extracts text from either a Dict or an Object."""
+    """
+    Robustly extracts text from Dicts, Objects, or Multimodal Lists.
+    Fixes 'list object has no attribute lower' error.
+    """
+    content = ""
+    # 1. Extract raw content from object or dict
     if hasattr(msg, 'content'):
-        return msg.content
-    if isinstance(msg, dict):
-        return msg.get('content', '')
-    return str(msg)
+        content = msg.content
+    elif isinstance(msg, dict):
+        content = msg.get('content', '')
+    else:
+        content = str(msg)
+    
+    # 2. Handle Multimodal List (e.g. Vercel/OpenAI format)
+    if isinstance(content, list):
+        text_parts = []
+        for part in content:
+            if isinstance(part, str):
+                text_parts.append(part)
+            elif isinstance(part, dict) and "text" in part:
+                text_parts.append(str(part["text"]))
+        return " ".join(text_parts)
+    
+    return str(content)
 
 # --- 4. Node: Intelligent Intent Parser ---
 def parse_intent(state: AgentState):
     messages = state.get("messages", [])
     if not messages: return {}
     
-    # FIX: Use helper to safely get text
+    # FIX: Use robust helper to safely get text
     last_msg = get_message_text(messages[-1]).lower()
     
     if "start over" in last_msg or "reset" in last_msg:
@@ -218,7 +236,7 @@ def select_room(state: AgentState):
             "messages": [AIMessage(content=f"Great! For {h['name']}, Standard (${h['price']}) or Suite (${h['price']*1.5})?")]
         }
     
-    # FIX: Use helper to safely get text
+    # FIX: Use robust helper
     last_msg = get_message_text(state["messages"][-1]).lower()
     
     if "suite" in last_msg:
