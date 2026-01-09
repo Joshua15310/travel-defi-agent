@@ -26,7 +26,9 @@ BOOKING_KEY = os.getenv("BOOKING_API_KEY")
 
 LLM_BASE_URL = "https://api.x.ai/v1" 
 LLM_API_KEY = os.getenv("GROK_API_KEY") or os.getenv("OPENAI_API_KEY")
-LLM_MODEL = "grok-beta" if os.getenv("GROK_API_KEY") else "gpt-4o-mini"
+
+# FIX: Updated model name from deprecated 'grok-beta' to 'grok-3'
+LLM_MODEL = "grok-3" if os.getenv("GROK_API_KEY") else "gpt-4o-mini"
 
 # --- 1. State Definition ---
 class AgentState(TypedDict, total=False):
