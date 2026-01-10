@@ -744,9 +744,11 @@ def book_hotel(state: AgentState):
     details = f"{hotel_name} - {room_type} [Base/USDC]"
     
     try:
+        # Call warden_client with correct parameter names
+        # The function signature is: submit_booking(hotel_name, hotel_price, destination, swap_amount)
         result = warden_client.submit_booking(
             hotel_name=details,
-            price_usd=amount_usdc,
+            hotel_price=amount_usdc,  # Changed from price_usd to hotel_price
             destination=destination,
             swap_amount=0.0
         )
