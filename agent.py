@@ -613,9 +613,9 @@ def search_hotels(state: AgentState):
             "messages": [AIMessage(content=f"That's all the hotels I found! Say **'start over'** to search again.")]
         }
     
-    # Format message
-    options = "\n".join([
-        f"**{i+1}. {h['name']}**\n   💵 {symbol}{h['price']}/night | {h['rating_str']}"
+    # Format message as clean numbered list
+    options = "\n\n".join([
+        f"**{i+1}. {h['name']}** 💵 {symbol}{h['price']}/night | {h['rating_str']}"
         for i, h in enumerate(batch)
     ])
     
