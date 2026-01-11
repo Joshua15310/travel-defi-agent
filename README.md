@@ -2,17 +2,6 @@
 
 [![Python Tests](https://github.com/Joshua15310/travel-defi-agent/actions/workflows/python-tests.yml/badge.svg)](https://github.com/Joshua15310/travel-defi-agent/actions/workflows/python-tests.yml)
 
-## Live Demo (MVP Deployed)
-
-The agent is live on the Render cloud with a custom chat interface ("Nomad").
-
-- **Chat Interface:** [Download index.html](index.html) and open it in your browser.
-  - *Connects to the live backend to demonstrate the full booking flow.*
-- **Developer Playground:** [Live Agent Playground](https://crypto-defi-agent.onrender.com/agent/playground/)
-  - *Set `thread_id` to "demo" in Config to test manually.*
-- **API Docs:** [Swagger UI](https://crypto-defi-agent.onrender.com/docs)
-
----
 
 **AI agent that books hotels under budget using USDC on Warden Protocol.**
 
