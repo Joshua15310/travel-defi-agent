@@ -27,6 +27,10 @@ load_dotenv()
 BOOKING_KEY = os.getenv("BOOKING_API_KEY")
 AMADEUS_API_KEY = os.getenv("AMADEUS_API_KEY")
 AMADEUS_API_SECRET = os.getenv("AMADEUS_API_SECRET")
+ONEINCH_API_KEY = os.getenv("ONEINCH_API_KEY")  # For token swaps
+
+# Production Mode Flag
+PRODUCTION_MODE = os.getenv("PRODUCTION_MODE", "false").lower() == "true"
 
 LLM_BASE_URL = "https://api.x.ai/v1" 
 LLM_API_KEY = os.getenv("GROK_API_KEY") or os.getenv("OPENAI_API_KEY")
@@ -199,6 +203,89 @@ def get_airport_code(city_name):
     city = city_name.lower().strip()
     return AIRPORT_CODES.get(city, city.upper()[:3])
 
+# --- 4.5. 1inch Swap Functions (For Multi-Currency Payments) ---
+def get_1inch_quote(from_token, to_token, amount, chain_id=8453):
+    """
+    Get swap quote from 1inch API
+    chain_id: 8453 = Base Network
+    from_token: Token address (e.g., USDC address on Base)
+    to_token: Token address (e.g., another stablecoin)
+    amount: Amount in smallest unit (wei for most tokens)
+    """
+    if not ONEINCH_API_KEY:
+        print("[1INCH] No API key - swap disabled")
+        return None
+    
+    try:
+        url = f"https://api.1inch.dev/swap/v6.0/{chain_id}/quote"
+        headers = {
+            "Authorization": f"Bearer {ONEINCH_API_KEY}",
+            "accept": "application/json"
+        }
+        params = {
+            "src": from_token,
+            "dst": to_token,
+            "amount": str(amount)
+        }
+        
+        response = requests.get(url, headers=headers, params=params, timeout=10)
+        data = response.json()
+        
+        if "dstAmount" in data:
+            print(f"[1INCH] Quote: {amount} -> {data['dstAmount']}")
+            return data
+        else:
+            print(f"[1INCH ERROR] {data}")
+            return None
+    except Exception as e:
+        print(f"[1INCH ERROR] {e}")
+        return None
+
+def execute_1inch_swap(from_token, to_token, amount, from_address, slippage=1):
+    """
+    Execute swap on 1inch (only in production mode)
+    Returns: transaction data or None
+    """
+    if not PRODUCTION_MODE:
+        print("[1INCH] Test mode - swap skipped")
+        return {"status": "mock", "tx_hash": "0xMOCK_SWAP"}
+    
+    if not ONEINCH_API_KEY:
+        print("[1INCH] No API key configured")
+        return None
+    
+    try:
+        url = f"https://api.1inch.dev/swap/v6.0/8453/swap"
+        headers = {
+            "Authorization": f"Bearer {ONEINCH_API_KEY}",
+            "accept": "application/json"
+        }
+        params = {
+            "src": from_token,
+            "dst": to_token,
+            "amount": str(amount),
+            "from": from_address,
+            "slippage": slippage,
+            "disableEstimate": "true"
+        }
+        
+        response = requests.get(url, headers=headers, params=params, timeout=15)
+        data = response.json()
+        
+        if "tx" in data:
+            print(f"[1INCH] Swap prepared: {data['tx']}")
+            return data
+        else:
+            print(f"[1INCH ERROR] {data}")
+            return None
+    except Exception as e:
+        print(f"[1INCH ERROR] {e}")
+        return None
+
+# Base Network Token Addresses (for reference)
+BASE_USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"  # USDC on Base
+BASE_WETH = "0x4200000000000000000000000000000000000006"  # Wrapped ETH on Base
+
 # --- 4. Amadeus API Functions ---
 def get_amadeus_token():
     """Get OAuth token for Amadeus API"""
@@ -212,7 +299,10 @@ def get_amadeus_token():
         return None
     
     try:
-        url = "https://test.api.amadeus.com/v1/security/oauth2/token"
+        # Use PRODUCTION endpoint if in production mode, otherwise TEST
+        base_url = "https://api.amadeus.com" if PRODUCTION_MODE else "https://test.api.amadeus.com"
+        url = f"{base_url}/v1/security/oauth2/token"
+        
         data = {
             "grant_type": "client_credentials",
             "client_id": AMADEUS_API_KEY,
@@ -227,7 +317,8 @@ def get_amadeus_token():
         AMADEUS_TOKEN_CACHE["token"] = token
         AMADEUS_TOKEN_CACHE["expires_at"] = time.time() + expires_in - 60
         
-        print(f"[AMADEUS] Token obtained, expires in {expires_in}s")
+        mode = "PRODUCTION" if PRODUCTION_MODE else "TEST"
+        print(f"[AMADEUS {mode}] Token obtained, expires in {expires_in}s")
         return token
     except Exception as e:
         print(f"[AMADEUS ERROR] Token fetch failed: {e}")
@@ -246,48 +337,46 @@ def search_flights_amadeus(origin, destination, departure_date, return_date=None
     token = get_amadeus_token()
     
     if not token:
-        # Mock flight data
-        print("[MOCK FLIGHTS] Using demo data")
-        base_price = 150 if not return_date else 280
-        mock_flights = [
-            {
-                "id": "MOCK1",
-                "airline": "British Airways",
-                "flight_number": "BA 307",
-                "departure_time": "10:00 AM",
-                "arrival_time": "2:00 PM",
-                "duration": "4h 0m",
-                "price": base_price,
-                "stops": "Direct",
-                "cabin": cabin
-            },
-            {
-                "id": "MOCK2",
-                "airline": "Air France",
-                "flight_number": "AF 1234",
-                "departure_time": "2:30 PM",
-                "arrival_time": "6:45 PM",
-                "duration": "4h 15m",
-                "price": base_price + 50,
-                "stops": "Direct",
-                "cabin": cabin
-            },
-            {
-                "id": "MOCK3",
-                "airline": "Lufthansa",
-                "flight_number": "LH 567",
-                "departure_time": "6:00 AM",
-                "arrival_time": "11:00 AM",
-                "duration": "5h 0m",
-                "price": base_price - 30,
-                "stops": "1 stop",
-                "cabin": cabin
-            }
-        ]
-        return mock_flights
+        # Mock flight data (only in test mode)
+        if not PRODUCTION_MODE:
+            print("[MOCK FLIGHTS] Using demo data")
+            base_price = 150 if not return_date else 280
+            mock_flights = [
+                {
+                    "id": "MOCK1",
+                    "airline": "British Airways",
+                    "flight_number": "BA 307",
+                    "departure_time": "10:00 AM",
+                    "arrival_time": "2:00 PM",
+                    "duration": "4h 0m",
+                    "price": base_price,
+                    "stops": "Direct",
+                    "cabin": cabin,
+                    "is_mock": True
+                },
+                {
+                    "id": "MOCK2",
+                    "airline": "Air France",
+                    "flight_number": "AF 1234",
+                    "departure_time": "2:30 PM",
+                    "arrival_time": "6:45 PM",
+                    "duration": "4h 15m",
+                    "price": base_price + 50,
+                    "stops": "Direct",
+                    "cabin": cabin,
+                    "is_mock": True
+                }
+            ]
+            return mock_flights
+        else:
+            print("[PRODUCTION ERROR] Cannot proceed without Amadeus credentials")
+            return []
     
     try:
-        url = "https://test.api.amadeus.com/v2/shopping/flight-offers"
+        # Use production or test endpoint based on mode
+        base_url = "https://api.amadeus.com" if PRODUCTION_MODE else "https://test.api.amadeus.com"
+        url = f"{base_url}/v2/shopping/flight-offers"
+        
         headers = {"Authorization": f"Bearer {token}"}
         params = {
             "originLocationCode": get_airport_code(origin),
@@ -295,7 +384,8 @@ def search_flights_amadeus(origin, destination, departure_date, return_date=None
             "departureDate": departure_date,
             "adults": str(adults),
             "travelClass": cabin,
-            "max": 10
+            "max": 10,
+            "currencyCode": "USD"
         }
         
         if return_date:
@@ -323,7 +413,9 @@ def search_flights_amadeus(origin, destination, departure_date, return_date=None
                     "duration": itinerary["duration"].replace("PT", "").lower(),
                     "price": float(offer["price"]["total"]),
                     "stops": "Direct" if len(itinerary["segments"]) == 1 else f"{len(itinerary['segments'])-1} stop(s)",
-                    "cabin": cabin
+                    "cabin": cabin,
+                    "is_mock": False,
+                    "booking_token": offer.get("id")  # Real booking token for production
                 }
                 flights.append(flight_info)
             except:
@@ -988,7 +1080,14 @@ def book_trip(state: AgentState):
         
         # Generate unique ticket/confirmation numbers
         import random
-        flight_ticket_number = f"TKT-{random.randint(100000, 999999)}" if state.get("selected_flight") else None
+        
+        # In production, use real booking references
+        if PRODUCTION_MODE and state.get("selected_flight") and not state["selected_flight"].get("is_mock"):
+            # Real flight booking would return actual PNR/ticket number
+            flight_ticket_number = f"TKT-{state['selected_flight'].get('booking_token', '')[:6].upper()}"
+        else:
+            flight_ticket_number = f"TKT-{random.randint(100000, 999999)}" if state.get("selected_flight") else None
+        
         hotel_confirmation = f"HTL-{random.randint(100000, 999999)}" if state.get("selected_hotel") else None
         
         # Build confirmation message with detailed booking info
