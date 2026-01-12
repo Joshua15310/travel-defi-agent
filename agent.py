@@ -966,7 +966,7 @@ Reply with **'1'** or **'2'**"""
             "messages": [AIMessage(content="⚠️ Please reply with **'1'** for Standard or **'2'** for Deluxe Suite.")]
         }
     
-    # Calculate totals
+    # Calculate totals with platform fee
     try:
         d1 = datetime.strptime(state["check_in"], "%Y-%m-%d")
         d2 = datetime.strptime(state["check_out"], "%Y-%m-%d")
@@ -978,20 +978,30 @@ Reply with **'1'** or **'2'**"""
     currency = state.get("currency", "USD")
     sym = state.get("currency_symbol", "$")
     
+    # Add platform fee (2%)
+    PLATFORM_FEE_PERCENTAGE = 0.02  # 2% platform fee
+    platform_fee_local = round(hotel_total_local * PLATFORM_FEE_PERCENTAGE, 2)
+    
     # Fetch live rate
     rate = get_live_rate(currency)
     hotel_total_usd = round(hotel_total_local * rate, 2)
+    platform_fee_usd = round(platform_fee_local * rate, 2)
     
-    # Calculate grand total
+    # Calculate grand total (including platform fee)
     flight_total_local = 0
     flight_total_usd = 0
     
     if state.get("selected_flight"):
         flight_total_local = state["selected_flight"]["price_local"]
         flight_total_usd = round(flight_total_local * rate, 2)
+        # Add platform fee to flight too
+        flight_platform_fee = round(flight_total_local * PLATFORM_FEE_PERCENTAGE, 2)
+        platform_fee_local += flight_platform_fee
+        platform_fee_usd += round(flight_platform_fee * rate, 2)
     
-    grand_total_local = hotel_total_local + flight_total_local
-    grand_total_usd = hotel_total_usd + flight_total_usd
+    subtotal_local = hotel_total_local + flight_total_local
+    grand_total_local = subtotal_local + platform_fee_local
+    grand_total_usd = hotel_total_usd + flight_total_usd + platform_fee_usd
     
     # Build summary
     if currency in ["USD", "USDC"]:
@@ -1021,11 +1031,18 @@ _(Rate updated {time.strftime('%H:%M UTC')})_"""
 
 👥 **Guests:** {state.get('guests', 2)}
 
-💰 **Total Cost:** {sym}{grand_total_local:.2f} {currency}
+---
+
+💰 **Pricing Breakdown:**
+• Subtotal: {sym}{subtotal_local:.2f} {currency}
+• Platform Fee (2%): {sym}{platform_fee_local:.2f} {currency}
+• **Total Cost:** {sym}{grand_total_local:.2f} {currency}
 
 {rate_info}
 
 💳 **Total Payment: {grand_total_usd:.2f} USDC** on Base Network
+
+_Platform fee helps cover blockchain gas fees and keeps Warden Travel running! 🚀_
 
 ---
 
