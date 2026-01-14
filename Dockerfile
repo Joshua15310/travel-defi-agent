@@ -1,30 +1,18 @@
+# 1. Use an official lightweight Python image
 FROM python:3.11-slim
 
-# 1. Install system dependencies required for the build
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    curl \
-    git \
-    libssl-dev \
-    pkg-config \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-ENV PATH="/root/.cargo/bin:${PATH}"
-
+# 2. Set the working directory
 WORKDIR /app
 
-RUN pip install --upgrade pip
-
-# 5. Install Python dependencies
+# 3. Install dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 6. Copy your agent code
+# 4. Copy your code
 COPY . .
 
-# 7. Expose the port
-ENV PORT=8000
+# 5. Expose the port
 EXPOSE 8000
 
-CMD exec langgraph dev --host 0.0.0.0 --port $PORT
+# 6. THE FIX: Run the Python script, NOT the uvicorn command
+CMD ["python", "server.py"]

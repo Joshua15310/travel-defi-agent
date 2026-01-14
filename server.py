@@ -99,10 +99,9 @@ async def stream_run(thread_id: str, request: Request):
         async def event_generator():
             try:
                 # CRITICAL FIX: We must use stream_mode="values" 
-                # This ensures Vercel gets the full state (messages list), not just a node update.
                 async for event in graph.astream(input_data, config=config, stream_mode="values"):
                     yield {
-                        "event": "values", # The Vercel app specifically listens for this event type
+                        "event": "values",
                         "data": json.dumps(event, cls=CustomEncoder)
                     }
                 yield {"event": "end"}
@@ -124,6 +123,39 @@ async def stream_run(thread_id: str, request: Request):
 async def post_thread_history(thread_id: str, request: Request):
     return []
 
+# --- NEW: LangGraph Standard Endpoints for Warden Compatibility ---
+
+@app.get("/agent/assistants/search")
+async def search_agents():
+    """
+    Warden App uses this to discover your agent.
+    """
+    return {
+        "agents": [{
+            "id": "travel-defi-agent",
+            "name": "Travel Defi Agent",
+            "description": "Books hotels using USDC and DeFi protocols"
+        }]
+    }
+
+@app.post("/agent/run")
+async def run_agent(request: Request):
+    """
+    Executes your agent with a user query.
+    """
+    data = await request.json()
+    user_query = data.get("message")
+    result = graph.invoke({"user_query": user_query})
+    return result
+
+@app.get("/agent/status")
+async def status():
+    """
+    Simple health check endpoint.
+    """
+    return {"status": "ok"}
+
+# --- MAIN ENTRYPOINT ---
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 10000))
