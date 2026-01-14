@@ -1,7 +1,7 @@
 FROM python:3.11-slim
 
 # 1. Install system dependencies
-# CRITICAL FIX: Added 'cargo' and 'pkg-config' to compile Rust dependencies
+# CRITICAL FIX: We add 'cargo' and 'pkg-config' to compile the Rust dependencies
 RUN apt-get update && apt-get install -y \
     build-essential \
     curl \
@@ -25,4 +25,5 @@ ENV PORT=8000
 EXPOSE 8000
 
 # 6. Run the official LangGraph CLI
-CMD exec langgraph up --host 0.0.0.0 --port $PORT
+# This automatically serves the endpoints the CTO is looking for
+CMD exec langgraph dev --host 0.0.0.0 --port $PORT
