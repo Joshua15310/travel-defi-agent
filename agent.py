@@ -1343,3 +1343,12 @@ workflow.add_edge("consultant", END)
 
 memory = MemorySaver()
 workflow_app = workflow.compile(checkpointer=memory)
+# --- LangGraph entrypoint (EXPORTED) ---
+
+# If you already created a StateGraph somewhere above like:
+# workflow = StateGraph(AgentState)
+# ... add nodes/edges ...
+# then compile it here.
+app = workflow_app
+graph = workflow_app
+ # optional alias for compatibility
