@@ -109,27 +109,27 @@ async def agent_thread_history(thread_id: str) -> List[Dict[str, Any]]:
 
 @agent.post("/threads/{thread_id}/runs/stream")
 async def agent_runs_stream(thread_id: str, request: Request):
-    # AgentChat expects SSE. We'll stream a minimal "values" event then end.
     async def gen():
         payload = {
             "messages": [
                 {
                     "type": "ai",
-                    "content": "Welcome to Warden Travel! What would you like to book today?",
+                    "content": "Welcome to Warden Travel! What would you like to book today?"
                 }
             ],
-            "requirements_complete": False,
+            "requirements_complete": False
         }
         yield {
             "event": "values",
-            "data": json.dumps(payload),
+            "data": json.dumps(payload)
         }
         yield {
             "event": "end",
-            "data": "",
+            "data": json.dumps({"status": "complete"})
         }
 
     return EventSourceResponse(gen())
+
 
 app.include_router(agent)
 
