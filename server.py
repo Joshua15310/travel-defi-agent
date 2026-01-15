@@ -5,17 +5,17 @@ from fastapi.routing import APIRouter
 
 app = FastAPI()
 
-# CORS (required for agentchat.vercel.app)
+# Enable CORS for frontend access
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # safe for demo
+    allow_origins=["*"],  # Use specific origin if needed
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # -------------------------
-# ROOT ENDPOINTS (CTO)
+# Root endpoints (for CTO)
 # -------------------------
 
 @app.get("/status")
@@ -59,7 +59,7 @@ def info():
     }
 
 # -------------------------
-# /agent ROUTES (LangGraph UI)
+# /agent endpoints (for LangGraph UI)
 # -------------------------
 
 agent = APIRouter(prefix="/agent")
