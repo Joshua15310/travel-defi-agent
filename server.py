@@ -1,162 +1,54 @@
-import os
-import uuid
-import json
-import traceback
-from datetime import datetime, timezone
 from fastapi import FastAPI, Request
-from fastapi.middleware.cors import CORSMiddleware
-from langserve import add_routes
-from sse_starlette.sse import EventSourceResponse
+from fastapi.responses import JSONResponse
 
-# Import 'workflow_app' from agent.py
-from agent import workflow_app as graph 
+app = FastAPI()
 
-app = FastAPI(
-    title="Nomad AI Travel Agent",
-    version="1.0",
-    description="Warden Protocol Travel Agent",
-)
+# Health check
+@app.get("/status")
+def status():
+    return {"status": "ok"}
 
-# 1. Broaden CORS for Vercel
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["https://agentchat.vercel.app", "http://localhost:3000", "*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-    expose_headers=["*"],
-)
-
-# 2. Standard LangServe Routes
-add_routes(
-    app,
-    graph,
-    path="/agent",
-)
-
-# --- VERCEL COMPATIBILITY LAYER ---
-
-@app.get("/agent/info")
-async def get_info():
+# Agent discovery
+@app.get("/assistants/search")
+def search_assistants():
     return {
-        "graphs": {
-            "agent": {
-                "input_schema": graph.input_schema.schema(),
-                "output_schema": graph.output_schema.schema(),
+        "agents": [
+            {
+                "id": "travel-defi-agent",
+                "name": "Travel Defi Agent",
+                "description": "Books hotels using USDC and DeFi protocols"
             }
+        ]
+    }
+
+# Run agent workflow
+@app.post("/run")
+async def run_agent(request: Request):
+    body = await request.json()
+    # Expecting {"messages":[{"role":"user","content":"..."}]}
+    messages = body.get("messages", [])
+    if not messages:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "Missing 'messages' in request body"}
+        )
+    user_message = messages[0].get("content", "")
+    # TODO: integrate your LangGraph workflow here
+    return {
+        "result": {
+            "reply": f"Agent received: {user_message}",
+            "status": "success"
         }
     }
 
-@app.post("/agent/threads/search")
-async def search_threads(request: Request):
-    return []
-
-@app.post("/agent/threads")
-async def create_thread(request: Request):
+# Optional: info endpoint
+@app.get("/info")
+def info():
     return {
-        "thread_id": str(uuid.uuid4()),
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-        "metadata": {},
-        "status": "idle",
-        "config": {},
-        "values": None
+        "graphs": {
+            "agent": {
+                "input_schema": {"messages": "list of {role, content}"},
+                "output_schema": {"result": "structured JSON"}
+            }
+        }
     }
-
-@app.get("/agent/threads/{thread_id}")
-async def get_thread(thread_id: str):
-    return {
-        "thread_id": thread_id,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-        "metadata": {},
-        "status": "idle",
-        "values": None
-    }
-
-# --- SERIALIZATION HELPER ---
-class CustomEncoder(json.JSONEncoder):
-    def default(self, obj):
-        if hasattr(obj, 'model_dump'):
-            return obj.model_dump()
-        if hasattr(obj, 'dict'):
-            return obj.dict()
-        if hasattr(obj, 'json'):
-            return obj.json()
-        try:
-            return super().default(obj)
-        except TypeError:
-            return str(obj)
-
-# 7. Streaming Run Endpoint (FIXED FOR VERCEL PROTOCOL)
-@app.post("/agent/threads/{thread_id}/runs/stream")
-async def stream_run(thread_id: str, request: Request):
-    try:
-        body = await request.json()
-        input_data = body.get("input", {})
-        config = {"configurable": {"thread_id": thread_id}}
-
-        async def event_generator():
-            try:
-                # CRITICAL FIX: We must use stream_mode="values" 
-                async for event in graph.astream(input_data, config=config, stream_mode="values"):
-                    yield {
-                        "event": "values",
-                        "data": json.dumps(event, cls=CustomEncoder)
-                    }
-                yield {"event": "end"}
-            except Exception as e:
-                print(f"Stream error: {e}")
-                yield {
-                    "event": "error",
-                    "data": json.dumps({"error": str(e)})
-                }
-                yield {"event": "end"}
-
-        return EventSourceResponse(event_generator())
-    
-    except Exception as e:
-        return {"error": str(e)}
-
-# 8. Mock History Endpoint
-@app.post("/agent/threads/{thread_id}/history")
-async def post_thread_history(thread_id: str, request: Request):
-    return []
-
-# --- NEW: LangGraph Standard Endpoints for Warden Compatibility ---
-
-@app.get("/agent/assistants/search")
-async def search_agents():
-    """
-    Warden App uses this to discover your agent.
-    """
-    return {
-        "agents": [{
-            "id": "travel-defi-agent",
-            "name": "Travel Defi Agent",
-            "description": "Books hotels using USDC and DeFi protocols"
-        }]
-    }
-
-@app.post("/agent/run")
-async def run_agent(request: Request):
-    """
-    Executes your agent with a user query.
-    """
-    data = await request.json()
-    user_query = data.get("message")
-    result = graph.invoke({"user_query": user_query})
-    return result
-
-@app.get("/agent/status")
-async def status():
-    """
-    Simple health check endpoint.
-    """
-    return {"status": "ok"}
-
-# --- MAIN ENTRYPOINT ---
-if __name__ == "__main__":
-    import uvicorn
-    port = int(os.environ.get("PORT", 10000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
