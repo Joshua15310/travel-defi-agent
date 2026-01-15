@@ -184,13 +184,48 @@ async def runs_stream(thread_id: str, request: Request):
             reply = _call_agent(thread_id)
             THREADS[thread_id].append({"role": "ai", "content": reply})
 
-            yield {"event": "values", "data": json.dumps({"messages": [{"role": "ai", "content": reply}]})}
-            yield {"event": "end", "data": json.dumps({"status": "complete"})}
+            # 1️⃣ Send the actual response
+            yield {
+                "event": "values",
+                "data": json.dumps(
+                    {
+                        "messages": [{"role": "ai", "content": reply}],
+                        "requirements_complete": False,
+                    },
+                    ensure_ascii=False,
+                ),
+            }
+
+            # 2️⃣ Heartbeat to keep UI mounted
+            yield {
+                "event": "ping",
+                "data": json.dumps({"ok": True}),
+            }
+
+            # 3️⃣ End WITHOUT marking completion
+            yield {
+                "event": "end",
+                "data": json.dumps({"status": "running"}),
+            }
+
         except Exception as e:
             msg = f"Server error: {type(e).__name__}: {e}"
             THREADS[thread_id].append({"role": "ai", "content": msg})
-            yield {"event": "values", "data": json.dumps({"messages": [{"role": "ai", "content": msg}]})}
-            yield {"event": "end", "data": json.dumps({"status": "complete"})}
+
+            yield {
+                "event": "values",
+                "data": json.dumps(
+                    {
+                        "messages": [{"role": "ai", "content": msg}],
+                        "requirements_complete": False,
+                    },
+                    ensure_ascii=False,
+                ),
+            }
+            yield {
+                "event": "end",
+                "data": json.dumps({"status": "running"}),
+            }
 
     return EventSourceResponse(gen())
 
