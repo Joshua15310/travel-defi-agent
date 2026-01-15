@@ -1,14 +1,22 @@
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 app = FastAPI()
 
-# Health check
+# Enable CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["https://agentchat.vercel.app"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 @app.get("/status")
 def status():
     return {"status": "ok"}
 
-# Agent discovery
 @app.get("/assistants/search")
 def search_assistants():
     return {
@@ -21,19 +29,13 @@ def search_assistants():
         ]
     }
 
-# Run agent workflow
 @app.post("/run")
 async def run_agent(request: Request):
     body = await request.json()
-    # Expecting {"messages":[{"role":"user","content":"..."}]}
     messages = body.get("messages", [])
     if not messages:
-        return JSONResponse(
-            status_code=400,
-            content={"error": "Missing 'messages' in request body"}
-        )
+        return JSONResponse(status_code=400, content={"error": "Missing 'messages'"})
     user_message = messages[0].get("content", "")
-    # TODO: integrate your LangGraph workflow here
     return {
         "result": {
             "reply": f"Agent received: {user_message}",
@@ -41,7 +43,6 @@ async def run_agent(request: Request):
         }
     }
 
-# Optional: info endpoint
 @app.get("/info")
 def info():
     return {
