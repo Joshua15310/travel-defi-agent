@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import traceback
@@ -30,6 +31,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["*"],
+    max_age=600,
 )
 
 DEBUG = os.getenv("DEBUG", "0") == "1"
@@ -194,6 +196,11 @@ def root_head():
     return JSONResponse(content=None, status_code=200)
 
 
+@app.options("/{path:path}")
+def options_handler():
+    return JSONResponse(status_code=200)
+
+
 @app.get("/status")
 def status():
     return {"status": "ok"}
@@ -316,19 +323,25 @@ async def runs_stream(thread_id: str, request: Request):
             ai_msg = _new_msg("assistant", reply)  # Use "assistant" instead of "ai"
             THREADS[thread_id].append(ai_msg)
 
-            # 3. Stream the message in chunks (simulate streaming)
-            # First send the message structure
+            # 3. Stream the message - send partial first with single message (not in array)
             _record("messages/partial", ai_msg)
-            yield f"event: messages/partial\ndata: {json.dumps([ai_msg], ensure_ascii=False)}\n\n"
+            yield f"event: messages/partial\ndata: {json.dumps(ai_msg, ensure_ascii=False)}\n\n"
 
-            # 4. Then confirm with final messages event
+            # 4. Brief delay to allow frontend to render partial
+            await asyncio.sleep(0.05)
+
+            # 5. Then confirm with final messages event (as array)
             _record("messages", [ai_msg])
             yield f"event: messages\ndata: {json.dumps([ai_msg], ensure_ascii=False)}\n\n"
 
-            # 5. Send end event with success status
+            # 6. Brief delay before end event
+            await asyncio.sleep(0.05)
+
+            # 7. Send end event with success status and complete thread state
             end = {
                 "run_id": run_id,
-                "status": "success"
+                "status": "success",
+                "thread_id": thread_id
             }
             _record("end", end)
             yield f"event: end\ndata: {json.dumps(end, ensure_ascii=False)}\n\n"
@@ -337,14 +350,16 @@ async def runs_stream(thread_id: str, request: Request):
             _capture_error(thread_id, run_id, body, e)
             err = {
                 "run_id": run_id,
-                "error": LAST_ERROR.get("error", "unknown error")
+                "error": LAST_ERROR.get("error", "unknown error"),
+                "status": "error"
             }
             _record("error", err)
             yield f"event: error\ndata: {json.dumps(err, ensure_ascii=False)}\n\n"
 
             end = {
                 "run_id": run_id,
-                "status": "error"
+                "status": "error",
+                "thread_id": thread_id
             }
             _record("end", end)
             yield f"event: end\ndata: {json.dumps(end, ensure_ascii=False)}\n\n"
@@ -357,6 +372,9 @@ async def runs_stream(thread_id: str, request: Request):
             "Cache-Control": "no-cache, no-transform",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+            "Access-Control-Allow-Headers": "*",
         },
     )
 
