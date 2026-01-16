@@ -616,10 +616,6 @@ async def agent_runs_stream(thread_id: str, request: Request):
             full_history = _sanitize_history(THREADS.get(thread_id, []))
             _record("messages", full_history)
             log.info(f"YIELDING messages event - full thread history with {len(full_history)} messages")
-            # Ensure all required fields are present for SDK compatibility
-            for msg in full_history:
-                if not msg.get("id"):
-                    msg["id"] = f"msg_{uuid.uuid4().hex}"
             messages_json = json.dumps(full_history, ensure_ascii=False)
             log.info(f"MESSAGES EVENT PAYLOAD: {messages_json}")
             yield f"event: messages\ndata: {messages_json}\n\n"
