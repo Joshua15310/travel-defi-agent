@@ -457,7 +457,13 @@ async def runs_stream(thread_id: str, request: Request):
             full_history = _sanitize_history(THREADS.get(thread_id, []))
             _record("messages", full_history)
             log.info(f"YIELDING messages event - full thread history with {len(full_history)} messages")
-            messages_json = json.dumps(full_history, ensure_ascii=False)
+            # Wrap in proper LangGraph response format
+            response_data = {
+                "run_id": run_id,
+                "thread_id": thread_id,
+                "messages": full_history
+            }
+            messages_json = json.dumps(response_data, ensure_ascii=False)
             log.info(f"MESSAGES EVENT PAYLOAD: {messages_json}")
             yield f"event: messages\ndata: {messages_json}\n\n"
             await asyncio.sleep(0.01)
@@ -614,9 +620,14 @@ async def agent_runs_stream(thread_id: str, request: Request):
 
             # 5. Then confirm with final messages event (as full thread history)
             full_history = _sanitize_history(THREADS.get(thread_id, []))
+            response_data = {
+                "run_id": run_id,
+                "thread_id": thread_id,
+                "messages": full_history
+            }
             _record("messages", full_history)
             log.info(f"YIELDING messages event - full thread history with {len(full_history)} messages")
-            messages_json = json.dumps(full_history, ensure_ascii=False)
+            messages_json = json.dumps(response_data, ensure_ascii=False)
             log.info(f"MESSAGES EVENT PAYLOAD: {messages_json}")
             yield f"event: messages\ndata: {messages_json}\n\n"
             await asyncio.sleep(0.01)
