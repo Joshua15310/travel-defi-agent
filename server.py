@@ -3,7 +3,9 @@ from __future__ import annotations
 import ast
 import asyncio
 import json
+import logging
 import os
+import sys
 import traceback
 import uuid
 from datetime import datetime
@@ -16,6 +18,15 @@ from fastapi.routing import APIRouter
 
 import agent as agent_module
 from agent import AIMessage, HumanMessage, SystemMessage
+
+# Configure logging to stderr (always unbuffered)
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='[%(asctime)s] [%(levelname)s] %(message)s',
+    stream=sys.stderr,
+    force=True
+)
+log = logging.getLogger(__name__)
 
 
 app = FastAPI()
@@ -316,9 +327,8 @@ def thread_history_get(thread_id: str):
     history = THREADS.get(thread_id, [])
     # Ensure all messages have clean content
     result = _sanitize_history(history)
-    print(f"[DEBUG] GET /threads/{thread_id}/history returning {len(result)} messages")
-    for msg in result:
-        print(f"  - {msg.get('type')}/{msg.get('role')}: {msg.get('content')[:50]}...")
+    msg_summary = [f"{m.get('role')}:{m.get('content')[:30]}" for m in result]
+    log.info(f"GET /threads/{thread_id}/history returning {len(result)} messages: {msg_summary}")
     return result
 
 
@@ -328,9 +338,8 @@ def thread_history_post(thread_id: str):
     history = THREADS.get(thread_id, [])
     # Ensure all messages have clean content
     result = _sanitize_history(history)
-    print(f"[DEBUG] POST /threads/{thread_id}/history returning {len(result)} messages")
-    for msg in result:
-        print(f"  - {msg.get('type')}/{msg.get('role')}: {msg.get('content')[:50]}...")
+    msg_summary = [f"{m.get('role')}:{m.get('content')[:30]}" for m in result]
+    log.info(f"POST /threads/{thread_id}/history returning {len(result)} messages: {msg_summary}")
     return result
 
 
@@ -365,15 +374,15 @@ async def runs_stream(thread_id: str, request: Request):
     body = await request.json()
     incoming = _normalize_incoming_messages((body.get("input") or {}).get("messages", []))
 
-    print(f"[DEBUG] /threads/{thread_id}/runs/stream - Received {len(incoming)} incoming messages")
+    log.info(f"/threads/{thread_id}/runs/stream - Received {len(incoming)} incoming messages")
     for msg in incoming:
-        print(f"  - {msg.get('type')}/{msg.get('role')}: {msg.get('content')[:50]}...")
+        log.info(f"  - {msg.get('type')}/{msg.get('role')}: {msg.get('content')[:50]}...")
 
     THREADS.setdefault(thread_id, [])
     if incoming:
         THREADS[thread_id].extend(incoming)
 
-    print(f"[DEBUG] Thread {thread_id} now has {len(THREADS[thread_id])} messages before agent call")
+    log.info(f"Thread {thread_id} now has {len(THREADS[thread_id])} messages before agent call")
 
     run_id = str(uuid.uuid4())
 
@@ -392,11 +401,11 @@ async def runs_stream(thread_id: str, request: Request):
 
             # 2. Call agent
             reply = _call_agent(thread_id)
-            print(f"[DEBUG] Agent reply: {reply[:100]}...")
+            log.info(f"Agent reply: {reply[:100]}...")
             ai_msg = _new_msg("assistant", reply)  # Use "assistant" instead of "ai"
-            print(f"[DEBUG] Created AI message: type={ai_msg.get('type')}, role={ai_msg.get('role')}, content={ai_msg.get('content')[:50]}...")
+            log.info(f"Created AI message: type={ai_msg.get('type')}, role={ai_msg.get('role')}, content={ai_msg.get('content')[:50]}...")
             THREADS[thread_id].append(ai_msg)
-            print(f"[DEBUG] Thread {thread_id} now has {len(THREADS[thread_id])} messages after agent response")
+            log.info(f"Thread {thread_id} now has {len(THREADS[thread_id])} messages after agent response")
 
             # 3. Stream the message - send partial first with single message (not in array)
             _record("messages/partial", ai_msg)
@@ -493,14 +502,20 @@ def agent_threads_search():
 def agent_thread_history_get(thread_id: str):
     """Vercel compatibility: Get thread message history"""
     history = THREADS.get(thread_id, [])
-    return _sanitize_history(history)
+    result = _sanitize_history(history)
+    msg_summary = [f"{m.get('role')}:{m.get('content')[:30]}" for m in result]
+    log.info(f"GET /agent/threads/{thread_id}/history returning {len(result)} messages: {msg_summary}")
+    return result
 
 
 @agent.post("/threads/{thread_id}/history")
 def agent_thread_history_post(thread_id: str):
     """Vercel compatibility: Get thread message history"""
     history = THREADS.get(thread_id, [])
-    return _sanitize_history(history)
+    result = _sanitize_history(history)
+    msg_summary = [f"{m.get('role')}:{m.get('content')[:30]}" for m in result]
+    log.info(f"POST /agent/threads/{thread_id}/history returning {len(result)} messages: {msg_summary}")
+    return result
 
 
 @agent.post("/threads/{thread_id}/runs/stream")
