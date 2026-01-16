@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import asyncio
 import json
 import os
@@ -11,7 +12,6 @@ from typing import Any, Dict, List, Literal, Optional
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
-from fastapi.routing import APIRouter
 
 import agent as agent_module
 from agent import AIMessage, HumanMessage, SystemMessage
@@ -58,11 +58,18 @@ def _new_msg(role: Role, content: str) -> Dict[str, Any]:
         final_role = "user"
         msg_type = "human"
 
+    # Ensure content is a clean string
+    if not isinstance(content, str):
+        content = str(content)
+    
+    # Remove any leading/trailing whitespace
+    content = (content or "").strip()
+
     return {
         "id": f"msg_{uuid.uuid4().hex}",
         "type": msg_type,
         "role": final_role,  # AgentChat expects: user, assistant, or system
-        "content": content or "",
+        "content": content,
     }
 
 
@@ -86,10 +93,50 @@ def _record(event: str, data: Any) -> None:
         del LAST_STREAM[:100]
 
 
+def _sanitize_history(history: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Ensure all messages in history have clean, properly formatted content"""
+    sanitized = []
+    for msg in history:
+        if not isinstance(msg, dict):
+            continue
+        
+        # Create a clean copy
+        clean_msg = {
+            "id": msg.get("id", f"msg_{uuid.uuid4().hex}"),
+            "type": msg.get("type", "human"),
+            "role": msg.get("role", "user"),
+            "content": msg.get("content", "")
+        }
+        
+        # Ensure content is clean
+        content = clean_msg["content"]
+        if isinstance(content, str):
+            # If content is a stringified list, try to extract text
+            if content.startswith("[{") and "type" in content and "text" in content:
+                try:
+                    parsed = ast.literal_eval(content)
+                    text_parts = []
+                    if isinstance(parsed, list):
+                        for item in parsed:
+                            if isinstance(item, dict) and item.get("type") == "text":
+                                text_parts.append(item.get("text", ""))
+                    if text_parts:
+                        clean_msg["content"] = " ".join(text_parts)
+                except:
+                    pass  # Keep original content if parsing fails
+        
+        sanitized.append(clean_msg)
+    
+    return sanitized
+
+
 def _normalize_incoming_messages(messages: Any) -> List[Dict[str, Any]]:
     """
-    AgentChat sends input.messages like: [{role, content, ...}, ...]
-    We convert them into the same canonical ChatMessage objects we store/stream.
+    AgentChat sends input.messages in different formats:
+    1. Simple: [{role: "user", content: "hello"}, ...]
+    2. Complex: [{role: "user", content: [{"type": "text", "text": "hello"}]}, ...]
+    
+    We normalize to extract the actual text content.
     """
     if not isinstance(messages, list):
         return []
@@ -98,7 +145,36 @@ def _normalize_incoming_messages(messages: Any) -> List[Dict[str, Any]]:
         if not isinstance(m, dict):
             continue
         role = str(m.get("role", "user"))
-        content = str(m.get("content", ""))
+        content_raw = m.get("content", "")
+        
+        # Extract actual text content
+        if isinstance(content_raw, list):
+            # Format: [{"type": "text", "text": "hello"}, ...]
+            text_parts = []
+            for item in content_raw:
+                if isinstance(item, dict):
+                    if item.get("type") == "text":
+                        text_parts.append(item.get("text", ""))
+            content = " ".join(text_parts) if text_parts else str(content_raw)
+        elif isinstance(content_raw, str):
+            # Check if it's a stringified list (edge case from buggy frontend)
+            if content_raw.startswith("[{") and "type" in content_raw and "text" in content_raw:
+                try:
+                    # Try to parse it as Python literal
+                    parsed = ast.literal_eval(content_raw)
+                    text_parts = []
+                    if isinstance(parsed, list):
+                        for item in parsed:
+                            if isinstance(item, dict) and item.get("type") == "text":
+                                text_parts.append(item.get("text", ""))
+                    content = " ".join(text_parts) if text_parts else content_raw
+                except:
+                    content = content_raw
+            else:
+                content = content_raw
+        else:
+            content = str(content_raw)
+        
         out.append(_new_msg(role=role, content=content))
     return out
 
@@ -110,7 +186,7 @@ def _to_langchain_messages(history: List[Dict[str, Any]]):
         content = m.get("content", "")
         if role == "system":
             lc.append(SystemMessage(content=content))
-        elif role == "ai":
+        elif role in ("ai", "assistant"):  # Support both "ai" and "assistant"
             lc.append(AIMessage(content=content))
         else:
             lc.append(HumanMessage(content=content))
@@ -208,82 +284,62 @@ def status():
 
 @app.get("/assistants/search")
 def assistants_search():
+    """LangGraph SDK Standard: List available assistants"""
     return _assistant_catalog()
 
 
 @app.get("/info")
 def info():
+    """LangGraph SDK Standard: Get agent info"""
     return _info_payload()
 
 
-@app.post("/run")
-async def run(request: Request):
-    body = await request.json()
-    incoming = _normalize_incoming_messages(body.get("messages", []))
-    if not incoming:
-        return JSONResponse(status_code=400, content={"error": "Missing messages"})
-
-    thread_id = "cto-run"
-    THREADS[thread_id] = incoming
-    reply = _call_agent(thread_id)
-    THREADS[thread_id].append(_new_msg("ai", reply))
-
-    return {"result": {"reply": reply}}
-
-
-# -----------------------------------------------------------------------------
-# /agent endpoints (AgentChat)
-# -----------------------------------------------------------------------------
-
-agent = APIRouter(prefix="/agent")
-
-
-@agent.get("/info")
-def agent_info():
-    return _info_payload()
-
-
-@agent.get("/assistants/search")
-def agent_assistants_search():
-    return _assistant_catalog()
-
-
-@agent.post("/threads")
+@app.post("/threads")
 def create_thread():
+    """LangGraph SDK Standard: Create new thread"""
     tid = str(uuid.uuid4())
     THREADS[tid] = []
     return {"thread_id": tid}
 
 
-@agent.post("/threads/search")
+@app.post("/threads/search")
 def threads_search():
+    """LangGraph SDK Standard: Search/list threads"""
     return [{"thread_id": t} for t in THREADS.keys()]
 
 
 # IMPORTANT: support BOTH GET and POST (different AgentChat builds use different methods)
-@agent.get("/threads/{thread_id}/history")
+@app.get("/threads/{thread_id}/history")
 def thread_history_get(thread_id: str):
-    return THREADS.get(thread_id, [])
+    """LangGraph SDK Standard: Get thread message history"""
+    history = THREADS.get(thread_id, [])
+    # Ensure all messages have clean content
+    return _sanitize_history(history)
 
 
-@agent.post("/threads/{thread_id}/history")
+@app.post("/threads/{thread_id}/history")
 def thread_history_post(thread_id: str):
-    return THREADS.get(thread_id, [])
+    """LangGraph SDK Standard: Get thread message history"""
+    history = THREADS.get(thread_id, [])
+    # Ensure all messages have clean content
+    return _sanitize_history(history)
 
 
-@agent.get("/debug/last_error")
+@app.get("/debug/last_error")
 def debug_last_error():
+    """Debug: Get last error"""
     return LAST_ERROR or {"ok": True}
 
 
-@agent.get("/debug/last_stream")
+@app.get("/debug/last_stream")
 def debug_last_stream():
+    """Debug: Get last stream events"""
     return {"count": len(LAST_STREAM), "last": LAST_STREAM[-80:]}
 
 
-@agent.get("/debug/threads")
+@app.get("/debug/threads")
 def debug_threads():
-    """Debug endpoint to see all thread data"""
+    """Debug: Get all thread data"""
     return {
         "threads": {
             tid: {
@@ -294,8 +350,9 @@ def debug_threads():
     }
 
 
-@agent.post("/threads/{thread_id}/runs/stream")
+@app.post("/threads/{thread_id}/runs/stream")
 async def runs_stream(thread_id: str, request: Request):
+    """LangGraph SDK Standard: Stream agent execution for a thread"""
     body = await request.json()
     incoming = _normalize_incoming_messages((body.get("input") or {}).get("messages", []))
 
@@ -377,6 +434,3 @@ async def runs_stream(thread_id: str, request: Request):
             "Access-Control-Allow-Headers": "*",
         },
     )
-
-
-app.include_router(agent)
