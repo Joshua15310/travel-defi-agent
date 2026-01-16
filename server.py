@@ -533,9 +533,15 @@ async def agent_runs_stream(thread_id: str, request: Request):
     body = await request.json()
     incoming = _normalize_incoming_messages((body.get("input") or {}).get("messages", []))
 
+    log.info(f"/agent/threads/{thread_id}/runs/stream - Received {len(incoming)} incoming messages")
+    for msg in incoming:
+        log.info(f"  - {msg.get('type')}/{msg.get('role')}: {msg.get('content')[:50]}...")
+
     THREADS.setdefault(thread_id, [])
     if incoming:
         THREADS[thread_id].extend(incoming)
+
+    log.info(f"Thread {thread_id} now has {len(THREADS[thread_id])} messages before agent call")
 
     run_id = str(uuid.uuid4())
 
@@ -554,8 +560,11 @@ async def agent_runs_stream(thread_id: str, request: Request):
 
             # 2. Call agent
             reply = _call_agent(thread_id)
+            log.info(f"Agent reply: {reply[:100]}...")
             ai_msg = _new_msg("assistant", reply)
+            log.info(f"Created AI message: type={ai_msg.get('type')}, role={ai_msg.get('role')}, content={ai_msg.get('content')[:50]}...")
             THREADS[thread_id].append(ai_msg)
+            log.info(f"Thread {thread_id} now has {len(THREADS[thread_id])} messages after agent response")
 
             # 3. Stream the message - send partial first with single message (not in array)
             _record("messages/partial", ai_msg)
