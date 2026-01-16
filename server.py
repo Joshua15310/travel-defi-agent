@@ -283,55 +283,80 @@ async def runs_stream(thread_id: str, request: Request):
     async def gen():
         LAST_STREAM.clear()
         try:
-            # 1. Send metadata event
+            # 1. Send metadata event (NDJSON format - just JSON + newline)
             meta = {
-                "run_id": run_id,
-                "thread_id": thread_id,
-                "assistant_id": body.get("assistant_id"),
-                "status": "running",
+                "event": "metadata",
+                "data": {
+                    "run_id": run_id,
+                    "thread_id": thread_id,
+                    "assistant_id": body.get("assistant_id"),
+                    "status": "running",
+                }
             }
-            _record("metadata", meta)
-            yield f"event: metadata\ndata: {json.dumps(meta, ensure_ascii=False)}\n\n"
+            _record("metadata", meta["data"])
+            yield json.dumps(meta, ensure_ascii=False) + "\n"
 
             # 2. Call agent
             reply = _call_agent(thread_id)
             ai_msg = _new_msg("ai", reply)
             THREADS[thread_id].append(ai_msg)
 
-            # 3. Stream messages event - FIXED SSE FORMAT
+            # 3. Stream messages event - NDJSON format
             messages_data = [ai_msg]
             _record("messages", messages_data)
-            yield f"event: messages\ndata: {json.dumps(messages_data, ensure_ascii=False)}\n\n"
+            messages_event = {
+                "event": "messages",
+                "data": messages_data
+            }
+            yield json.dumps(messages_event, ensure_ascii=False) + "\n"
 
-            # 4. Send updates event (for compatibility with different AgentChat versions)
-            yield f"event: updates\ndata: {json.dumps({{'messages': messages_data}}, ensure_ascii=False)}\n\n"
+            # 4. Send updates event (for compatibility)
+            updates_event = {
+                "event": "updates",
+                "data": {"messages": messages_data}
+            }
+            yield json.dumps(updates_event, ensure_ascii=False) + "\n"
 
-            # 5. Send ping
-            ping = {"run_id": run_id, "ok": True}
-            _record("ping", ping)
-            yield f"event: ping\ndata: {json.dumps(ping, ensure_ascii=False)}\n\n"
-
-            # 6. Send end event
-            end = {"run_id": run_id, "status": "complete"}
-            _record("end", end)
-            yield f"event: end\ndata: {json.dumps(end, ensure_ascii=False)}\n\n"
+            # 5. Send end event
+            end = {
+                "event": "end",
+                "data": {
+                    "run_id": run_id,
+                    "status": "complete"
+                }
+            }
+            _record("end", end["data"])
+            yield json.dumps(end, ensure_ascii=False) + "\n"
 
         except Exception as e:
             _capture_error(thread_id, run_id, body, e)
-            err = {"run_id": run_id, "error": LAST_ERROR.get("error", "unknown error")}
-            _record("error", err)
-            yield f"event: error\ndata: {json.dumps(err, ensure_ascii=False)}\n\n"
+            err = {
+                "event": "error",
+                "data": {
+                    "run_id": run_id,
+                    "error": LAST_ERROR.get("error", "unknown error")
+                }
+            }
+            _record("error", err["data"])
+            yield json.dumps(err, ensure_ascii=False) + "\n"
 
-            end = {"run_id": run_id, "status": "failed"}
-            _record("end", end)
-            yield f"event: end\ndata: {json.dumps(end, ensure_ascii=False)}\n\n"
+            end = {
+                "event": "end",
+                "data": {
+                    "run_id": run_id,
+                    "status": "failed"
+                }
+            }
+            _record("end", end["data"])
+            yield json.dumps(end, ensure_ascii=False) + "\n"
 
     return EventSourceResponse(
         gen(),
         headers={
             "Cache-Control": "no-cache", 
             "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",  # Disable nginx buffering on Render
+            "X-Accel-Buffering": "no",
+            "Content-Type": "application/x-ndjson",  # Specify NDJSON content type
         },
     )
 
