@@ -44,16 +44,22 @@ MsgType = Literal["human", "ai", "system"]
 
 def _new_msg(role: Role, content: str) -> Dict[str, Any]:
     role_norm: Role = role if role in ("user", "ai", "assistant", "system") else "user"
-    msg_type: MsgType = "human"
+    
+    # Normalize role to what AgentChat expects
     if role_norm in ("ai", "assistant"):
+        final_role = "assistant"
         msg_type = "ai"
     elif role_norm == "system":
+        final_role = "system"
         msg_type = "system"
+    else:
+        final_role = "user"
+        msg_type = "human"
 
     return {
         "id": f"msg_{uuid.uuid4().hex}",
         "type": msg_type,
-        "role": "ai" if role_norm in ("ai", "assistant") else role_norm,
+        "role": final_role,  # AgentChat expects: user, assistant, or system
         "content": content or "",
     }
 
@@ -268,6 +274,19 @@ def debug_last_stream():
     return {"count": len(LAST_STREAM), "last": LAST_STREAM[-80:]}
 
 
+@agent.get("/debug/threads")
+def debug_threads():
+    """Debug endpoint to see all thread data"""
+    return {
+        "threads": {
+            tid: {
+                "message_count": len(msgs),
+                "messages": msgs
+            } for tid, msgs in THREADS.items()
+        }
+    }
+
+
 @agent.post("/threads/{thread_id}/runs/stream")
 async def runs_stream(thread_id: str, request: Request):
     body = await request.json()
@@ -294,16 +313,19 @@ async def runs_stream(thread_id: str, request: Request):
 
             # 2. Call agent
             reply = _call_agent(thread_id)
-            ai_msg = _new_msg("ai", reply)
+            ai_msg = _new_msg("assistant", reply)  # Use "assistant" instead of "ai"
             THREADS[thread_id].append(ai_msg)
 
-            # 3. Stream messages event in proper SSE format
-            # AgentChat expects: event: messages\ndata: [array of message objects]\n\n
-            messages_data = [ai_msg]
-            _record("messages", messages_data)
-            yield f"event: messages\ndata: {json.dumps(messages_data, ensure_ascii=False)}\n\n"
+            # 3. Stream the message in chunks (simulate streaming)
+            # First send the message structure
+            _record("messages/partial", ai_msg)
+            yield f"event: messages/partial\ndata: {json.dumps([ai_msg], ensure_ascii=False)}\n\n"
 
-            # 4. Send end event
+            # 4. Then confirm with final messages event
+            _record("messages", [ai_msg])
+            yield f"event: messages\ndata: {json.dumps([ai_msg], ensure_ascii=False)}\n\n"
+
+            # 5. Send end event with success status
             end = {
                 "run_id": run_id,
                 "status": "success"
@@ -332,7 +354,7 @@ async def runs_stream(thread_id: str, request: Request):
         gen(),
         media_type="text/event-stream",
         headers={
-            "Cache-Control": "no-cache",
+            "Cache-Control": "no-cache, no-transform",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
         },
