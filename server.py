@@ -453,13 +453,16 @@ async def runs_stream(thread_id: str, request: Request):
             # 4. Brief delay to allow frontend to render partial
             await asyncio.sleep(0.05)
 
-            # 5. Then confirm with final messages event (as full thread history)
+            # 5. Send values event with messages (LangGraph SDK persists via values event)
             full_history = _sanitize_history(THREADS.get(thread_id, []))
-            _record("messages", full_history)
-            log.info(f"YIELDING messages event - full thread history with {len(full_history)} messages")
-            messages_json = json.dumps(full_history, ensure_ascii=False)
-            log.info(f"MESSAGES EVENT PAYLOAD: {messages_json}")
-            yield f"event: messages\ndata: {messages_json}\n\n"
+            values_payload = {
+                "messages": full_history
+            }
+            _record("values", values_payload)
+            log.info(f"YIELDING values event - full thread history with {len(full_history)} messages")
+            values_json = json.dumps(values_payload, ensure_ascii=False)
+            log.info(f"VALUES EVENT PAYLOAD: {values_json}")
+            yield f"event: values\ndata: {values_json}\n\n"
             await asyncio.sleep(0.01)
 
             # 6. Brief delay before end event
@@ -612,13 +615,16 @@ async def agent_runs_stream(thread_id: str, request: Request):
             # 4. Brief delay to allow frontend to render partial
             await asyncio.sleep(0.05)
 
-            # 5. Then confirm with final messages event (as full thread history)
+            # 5. Send values event with messages (LangGraph SDK persists via values event)
             full_history = _sanitize_history(THREADS.get(thread_id, []))
-            _record("messages", full_history)
-            log.info(f"YIELDING messages event - full thread history with {len(full_history)} messages")
-            messages_json = json.dumps(full_history, ensure_ascii=False)
-            log.info(f"MESSAGES EVENT PAYLOAD: {messages_json}")
-            yield f"event: messages\ndata: {messages_json}\n\n"
+            values_payload = {
+                "messages": full_history
+            }
+            _record("values", values_payload)
+            log.info(f"YIELDING values event - full thread history with {len(full_history)} messages")
+            values_json = json.dumps(values_payload, ensure_ascii=False)
+            log.info(f"VALUES EVENT PAYLOAD: {values_json}")
+            yield f"event: values\ndata: {values_json}\n\n"
             await asyncio.sleep(0.01)
 
             # 6. Brief delay before end event
