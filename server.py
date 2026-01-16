@@ -31,7 +31,7 @@ app.add_middleware(
         "http://localhost:5173",
         "*",
     ],
-    allow_credentials=False,  # keep False with wildcard
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["*"],
@@ -45,10 +45,8 @@ DEBUG = os.getenv("DEBUG", "0") == "1"
 # -----------------------------------------------------------------------------
 
 THREADS: Dict[str, List[Dict[str, str]]] = {}
-
 LAST_ERROR: Dict[str, Any] = {}
-LAST_STREAM: List[Dict[str, Any]] = []
-LAST_SNAPSHOT: Dict[str, Any] = {}
+LAST_STREAM: List[Dict[str, Any]] = {}
 
 
 # -----------------------------------------------------------------------------
@@ -59,36 +57,30 @@ def _now() -> str:
     return datetime.utcnow().isoformat() + "Z"
 
 
-def _record_stream(event: str, data: Any):
-    LAST_STREAM.append({"time": _now(), "event": event, "data": data})
-    if len(LAST_STREAM) > 250:
-        del LAST_STREAM[:100]
-
-
 def _normalize_messages(messages: Any) -> List[Dict[str, str]]:
     if not isinstance(messages, list):
         return []
-    out: List[Dict[str, str]] = []
+    out = []
     for m in messages:
-        if not isinstance(m, dict):
-            continue
-        role = str(m.get("role", "")).strip() or "user"
-        content = str(m.get("content", "")).strip()
-        out.append({"role": role, "content": content})
+        if isinstance(m, dict):
+            out.append(
+                {
+                    "role": m.get("role", "user"),
+                    "content": m.get("content", ""),
+                }
+            )
     return out
 
 
 def _to_langchain_messages(history: List[Dict[str, str]]):
     lc = []
     for m in history:
-        role = m.get("role")
-        content = m.get("content", "")
-        if role == "system":
-            lc.append(SystemMessage(content=content))
-        elif role in ("ai", "assistant"):
-            lc.append(AIMessage(content=content))
+        if m["role"] == "system":
+            lc.append(SystemMessage(content=m["content"]))
+        elif m["role"] in ("ai", "assistant"):
+            lc.append(AIMessage(content=m["content"]))
         else:
-            lc.append(HumanMessage(content=content))
+            lc.append(HumanMessage(content=m["content"]))
     return lc
 
 
@@ -99,49 +91,18 @@ def _extract_ai_text(result: Any) -> str:
             last = msgs[-1]
             if hasattr(last, "content"):
                 return str(last.content)
-            if isinstance(last, dict) and isinstance(last.get("content"), str):
-                return last["content"]
-    return "I’m here—tell me what you want to book (destination, dates, budget)."
-
-
-def _assistant_catalog() -> Dict[str, Any]:
-    return {
-        "agents": [
-            {
-                "id": "travel-defi-agent",
-                "name": "Travel DeFi Agent",
-                "description": "Books hotels using USDC and DeFi protocols",
-            }
-        ]
-    }
-
-
-def _info_payload() -> Dict[str, Any]:
-    return {
-        "graphs": {
-            "agent": {
-                "input_schema": {"messages": "list of {role, content}"},
-                "output_schema": {"result": "structured JSON"},
-            }
-        }
-    }
+    return "I’m here—tell me what you want to book."
 
 
 def _call_agent(thread_id: str) -> str:
-    """
-    Requires agent.py to export:
-      app = workflow_app
-      graph = workflow_app
-    """
     if not hasattr(agent_module, "app"):
         raise RuntimeError(
-            "agent.py does not export `app`. Add at bottom of agent.py:\n"
+            "agent.py must export:\n"
             "app = workflow_app\n"
-            "graph = workflow_app\n"
+            "graph = workflow_app"
         )
 
     lc_history = _to_langchain_messages(THREADS.get(thread_id, []))
-
     result = agent_module.app.invoke(
         {"messages": lc_history},
         config={"configurable": {"thread_id": thread_id}},
@@ -149,8 +110,7 @@ def _call_agent(thread_id: str) -> str:
     return _extract_ai_text(result)
 
 
-def _capture_error(thread_id: str, run_id: str, request_body: Any, e: Exception):
-    tb = traceback.format_exc()
+def _capture_error(thread_id: str, run_id: str, body: Any, e: Exception):
     LAST_ERROR.clear()
     LAST_ERROR.update(
         {
@@ -158,8 +118,8 @@ def _capture_error(thread_id: str, run_id: str, request_body: Any, e: Exception)
             "thread_id": thread_id,
             "run_id": run_id,
             "error": f"{type(e).__name__}: {str(e)}",
-            "traceback": tb,
-            "request_body": request_body if DEBUG else {"note": "Set DEBUG=1 to include request body"},
+            "traceback": traceback.format_exc(),
+            "request_body": body if DEBUG else "Enable DEBUG=1 to see request body",
         }
     )
 
@@ -180,12 +140,27 @@ def status():
 
 @app.get("/assistants/search")
 def assistants_search():
-    return _assistant_catalog()
+    return {
+        "agents": [
+            {
+                "id": "travel-defi-agent",
+                "name": "Travel DeFi Agent",
+                "description": "Books flights and hotels using USDC",
+            }
+        ]
+    }
 
 
 @app.get("/info")
 def info():
-    return _info_payload()
+    return {
+        "graphs": {
+            "agent": {
+                "input_schema": {"messages": "list"},
+                "output_schema": {"result": "json"},
+            }
+        }
+    }
 
 
 @app.post("/run")
@@ -193,12 +168,11 @@ async def run(request: Request):
     body = await request.json()
     messages = _normalize_messages(body.get("messages", []))
     if not messages:
-        return JSONResponse(status_code=400, content={"error": "Missing messages (expected list of {role, content})"})
+        return JSONResponse(status_code=400, content={"error": "Missing messages"})
 
-    thread_id = "cto-run"
-    THREADS[thread_id] = messages
-    reply = _call_agent(thread_id)
-    return {"result": {"reply": reply, "status": "success"}}
+    THREADS["cto-run"] = messages
+    reply = _call_agent("cto-run")
+    return {"result": {"reply": reply}}
 
 
 # -----------------------------------------------------------------------------
@@ -210,24 +184,24 @@ agent = APIRouter(prefix="/agent")
 
 @agent.get("/info")
 def agent_info():
-    return _info_payload()
+    return info()
 
 
 @agent.get("/assistants/search")
 def agent_assistants_search():
-    return _assistant_catalog()
+    return assistants_search()
 
 
 @agent.post("/threads")
 def create_thread():
-    thread_id = str(uuid.uuid4())
-    THREADS[thread_id] = []
-    return {"thread_id": thread_id}
+    tid = str(uuid.uuid4())
+    THREADS[tid] = []
+    return {"thread_id": tid}
 
 
 @agent.post("/threads/search")
 def threads_search():
-    return [{"thread_id": tid} for tid in THREADS.keys()]
+    return [{"thread_id": t} for t in THREADS.keys()]
 
 
 @agent.post("/threads/{thread_id}/history")
@@ -237,103 +211,61 @@ def thread_history(thread_id: str):
 
 @agent.get("/debug/last_error")
 def debug_last_error():
-    return LAST_ERROR or {"ok": True, "message": "No errors captured yet."}
+    return LAST_ERROR or {"ok": True}
 
 
 @agent.get("/debug/last_stream")
 def debug_last_stream():
-    return {"count": len(LAST_STREAM), "last": LAST_STREAM[-80:]}
-
-
-@agent.get("/debug/snapshot")
-def debug_snapshot():
-    """
-    One endpoint to show the last run end-to-end (request -> stream -> error if any).
-    """
-    return {
-        "time": _now(),
-        "last_snapshot": LAST_SNAPSHOT or {"note": "No snapshot yet. Send a message first."},
-        "last_error": LAST_ERROR or None,
-        "last_stream_tail": LAST_STREAM[-30:],
-    }
+    return LAST_STREAM
 
 
 @agent.post("/threads/{thread_id}/runs/stream")
 async def runs_stream(thread_id: str, request: Request):
-    """
-    Key fix: DO NOT end with status 'complete' for normal chat turns.
-    AgentChat is treating that as 'close and reset UI'.
-
-    We emit:
-      metadata -> messages -> ping -> end(status='running')
-
-    Also we ONLY emit 'messages' (no duplicate 'values').
-    """
     body = await request.json()
     incoming = _normalize_messages((body.get("input") or {}).get("messages", []))
 
     THREADS.setdefault(thread_id, [])
-    if incoming:
-        THREADS[thread_id].extend(incoming)
+    THREADS[thread_id].extend(incoming)
 
     run_id = str(uuid.uuid4())
 
     async def gen():
-        LAST_STREAM.clear()
-        LAST_SNAPSHOT.clear()
-
         try:
+            # metadata
             meta = {
                 "run_id": run_id,
                 "thread_id": thread_id,
                 "assistant_id": body.get("assistant_id"),
                 "status": "running",
             }
-            _record_stream("metadata", meta)
-            yield {"event": "metadata", "data": json.dumps(meta, ensure_ascii=False)}
+            LAST_STREAM.clear()
+            LAST_STREAM.append({"event": "metadata", "data": meta})
+            yield {"event": "metadata", "data": json.dumps(meta)}
 
+            # message
             reply = _call_agent(thread_id)
             THREADS[thread_id].append({"role": "ai", "content": reply})
 
-            msg_obj = {
+            msg = {
                 "id": f"msg_{uuid.uuid4().hex}",
                 "type": "ai",
                 "role": "ai",
                 "content": reply,
             }
+            LAST_STREAM.append({"event": "messages", "data": [msg]})
+            yield {"event": "messages", "data": json.dumps([msg])}
 
-            _record_stream("messages", [msg_obj])
-            yield {"event": "messages", "data": json.dumps([msg_obj], ensure_ascii=False)}
-
+            # keepalive ping
             ping = {"run_id": run_id, "ok": True}
-            _record_stream("ping", ping)
-            yield {"event": "ping", "data": json.dumps(ping, ensure_ascii=False)}
+            LAST_STREAM.append({"event": "ping", "data": ping})
+            yield {"event": "ping", "data": json.dumps(ping)}
 
-            # IMPORTANT: not 'complete'
-            end = {"run_id": run_id, "status": "running"}
-            _record_stream("end", end)
-            yield {"event": "end", "data": json.dumps(end, ensure_ascii=False)}
-
-            LAST_SNAPSHOT.update(
-                {
-                    "time": _now(),
-                    "thread_id": thread_id,
-                    "run_id": run_id,
-                    "request_body": body if DEBUG else {"note": "Set DEBUG=1 to include request body"},
-                    "reply_preview": reply[:400],
-                }
-            )
+            # ❌ NO `end` EVENT — THIS IS THE FIX
 
         except Exception as e:
-            _capture_error(thread_id=thread_id, run_id=run_id, request_body=body, e=e)
-
-            err = {"run_id": run_id, "error": LAST_ERROR.get("error", "unknown error")}
-            _record_stream("error", err)
-            yield {"event": "error", "data": json.dumps(err, ensure_ascii=False)}
-
-            end = {"run_id": run_id, "status": "failed"}
-            _record_stream("end", end)
-            yield {"event": "end", "data": json.dumps(end, ensure_ascii=False)}
+            _capture_error(thread_id, run_id, body, e)
+            err = {"run_id": run_id, "error": LAST_ERROR["error"]}
+            yield {"event": "error", "data": json.dumps(err)}
 
     return EventSourceResponse(
         gen(),
