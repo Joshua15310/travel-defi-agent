@@ -119,7 +119,7 @@ def _extract_ai_text(result: Any) -> str:
                 return str(last.content)
             if isinstance(last, dict) and isinstance(last.get("content"), str):
                 return last["content"]
-    return "I’m here—tell me what you want to book."
+    return "I'm here—tell me what you want to book."
 
 
 def _call_agent(thread_id: str) -> str:
@@ -283,6 +283,7 @@ async def runs_stream(thread_id: str, request: Request):
     async def gen():
         LAST_STREAM.clear()
         try:
+            # 1. Send metadata event
             meta = {
                 "run_id": run_id,
                 "thread_id": thread_id,
@@ -290,39 +291,48 @@ async def runs_stream(thread_id: str, request: Request):
                 "status": "running",
             }
             _record("metadata", meta)
-            yield {"event": "metadata", "data": json.dumps(meta, ensure_ascii=False)}
+            yield f"event: metadata\ndata: {json.dumps(meta, ensure_ascii=False)}\n\n"
 
+            # 2. Call agent
             reply = _call_agent(thread_id)
             ai_msg = _new_msg("ai", reply)
             THREADS[thread_id].append(ai_msg)
 
-            # Stream the same shape we store/return from history
-            _record("messages", [ai_msg])
-            yield {"event": "messages", "data": json.dumps([ai_msg], ensure_ascii=False)}
+            # 3. Stream messages event - FIXED SSE FORMAT
+            messages_data = [ai_msg]
+            _record("messages", messages_data)
+            yield f"event: messages\ndata: {json.dumps(messages_data, ensure_ascii=False)}\n\n"
 
+            # 4. Send updates event (for compatibility with different AgentChat versions)
+            yield f"event: updates\ndata: {json.dumps({{'messages': messages_data}}, ensure_ascii=False)}\n\n"
+
+            # 5. Send ping
             ping = {"run_id": run_id, "ok": True}
             _record("ping", ping)
-            yield {"event": "ping", "data": json.dumps(ping, ensure_ascii=False)}
+            yield f"event: ping\ndata: {json.dumps(ping, ensure_ascii=False)}\n\n"
 
-            # Bring back end so the UI stops "loading",
-            # but now history refresh will not wipe the message.
+            # 6. Send end event
             end = {"run_id": run_id, "status": "complete"}
             _record("end", end)
-            yield {"event": "end", "data": json.dumps(end, ensure_ascii=False)}
+            yield f"event: end\ndata: {json.dumps(end, ensure_ascii=False)}\n\n"
 
         except Exception as e:
             _capture_error(thread_id, run_id, body, e)
             err = {"run_id": run_id, "error": LAST_ERROR.get("error", "unknown error")}
             _record("error", err)
-            yield {"event": "error", "data": json.dumps(err, ensure_ascii=False)}
+            yield f"event: error\ndata: {json.dumps(err, ensure_ascii=False)}\n\n"
 
             end = {"run_id": run_id, "status": "failed"}
             _record("end", end)
-            yield {"event": "end", "data": json.dumps(end, ensure_ascii=False)}
+            yield f"event: end\ndata: {json.dumps(end, ensure_ascii=False)}\n\n"
 
     return EventSourceResponse(
         gen(),
-        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+        headers={
+            "Cache-Control": "no-cache", 
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # Disable nginx buffering on Render
+        },
     )
 
 
