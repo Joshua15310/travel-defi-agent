@@ -46,7 +46,7 @@ DEBUG = os.getenv("DEBUG", "0") == "1"
 
 THREADS: Dict[str, List[Dict[str, str]]] = {}
 LAST_ERROR: Dict[str, Any] = {}
-LAST_STREAM: List[Dict[str, Any]] = {}
+LAST_STREAM: List[Dict[str, Any]] = []  # ✅ FIX: must be a list, not a dict
 
 
 # -----------------------------------------------------------------------------
@@ -60,7 +60,7 @@ def _now() -> str:
 def _normalize_messages(messages: Any) -> List[Dict[str, str]]:
     if not isinstance(messages, list):
         return []
-    out = []
+    out: List[Dict[str, str]] = []
     for m in messages:
         if isinstance(m, dict):
             out.append(
@@ -216,7 +216,7 @@ def debug_last_error():
 
 @agent.get("/debug/last_stream")
 def debug_last_stream():
-    return LAST_STREAM
+    return {"count": len(LAST_STREAM), "last": LAST_STREAM[-80:]}
 
 
 @agent.post("/threads/{thread_id}/runs/stream")
@@ -240,7 +240,7 @@ async def runs_stream(thread_id: str, request: Request):
             }
             LAST_STREAM.clear()
             LAST_STREAM.append({"event": "metadata", "data": meta})
-            yield {"event": "metadata", "data": json.dumps(meta)}
+            yield {"event": "metadata", "data": json.dumps(meta, ensure_ascii=False)}
 
             # message
             reply = _call_agent(thread_id)
@@ -253,19 +253,20 @@ async def runs_stream(thread_id: str, request: Request):
                 "content": reply,
             }
             LAST_STREAM.append({"event": "messages", "data": [msg]})
-            yield {"event": "messages", "data": json.dumps([msg])}
+            yield {"event": "messages", "data": json.dumps([msg], ensure_ascii=False)}
 
             # keepalive ping
             ping = {"run_id": run_id, "ok": True}
             LAST_STREAM.append({"event": "ping", "data": ping})
-            yield {"event": "ping", "data": json.dumps(ping)}
+            yield {"event": "ping", "data": json.dumps(ping, ensure_ascii=False)}
 
-            # ❌ NO `end` EVENT — THIS IS THE FIX
+            # No "end" event (AgentChat may reset UI on end)
 
         except Exception as e:
             _capture_error(thread_id, run_id, body, e)
             err = {"run_id": run_id, "error": LAST_ERROR["error"]}
-            yield {"event": "error", "data": json.dumps(err)}
+            LAST_STREAM.append({"event": "error", "data": err})
+            yield {"event": "error", "data": json.dumps(err, ensure_ascii=False)}
 
     return EventSourceResponse(
         gen(),
