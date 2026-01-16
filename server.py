@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Literal, Optional
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.routing import APIRouter
 
 import agent as agent_module
 from agent import AIMessage, HumanMessage, SystemMessage
@@ -434,3 +435,141 @@ async def runs_stream(thread_id: str, request: Request):
             "Access-Control-Allow-Headers": "*",
         },
     )
+
+
+# =============================================================================
+# AGENT ROUTER - Mirror endpoints for Vercel app compatibility
+# Keeps /agent/* paths for existing Vercel app while supporting root paths
+# for CTO's LangGraph SDK integration
+# =============================================================================
+
+agent = APIRouter(prefix="/agent")
+
+
+@agent.get("/assistants/search")
+def agent_assistants_search():
+    """Vercel compatibility: List available assistants"""
+    return _assistant_catalog()
+
+
+@agent.get("/info")
+def agent_info():
+    """Vercel compatibility: Get agent info"""
+    return _info_payload()
+
+
+@agent.post("/threads")
+def agent_create_thread():
+    """Vercel compatibility: Create new thread"""
+    tid = str(uuid.uuid4())
+    THREADS[tid] = []
+    return {"thread_id": tid}
+
+
+@agent.post("/threads/search")
+def agent_threads_search():
+    """Vercel compatibility: Search/list threads"""
+    return [{"thread_id": t} for t in THREADS.keys()]
+
+
+@agent.get("/threads/{thread_id}/history")
+def agent_thread_history_get(thread_id: str):
+    """Vercel compatibility: Get thread message history"""
+    history = THREADS.get(thread_id, [])
+    return _sanitize_history(history)
+
+
+@agent.post("/threads/{thread_id}/history")
+def agent_thread_history_post(thread_id: str):
+    """Vercel compatibility: Get thread message history"""
+    history = THREADS.get(thread_id, [])
+    return _sanitize_history(history)
+
+
+@agent.post("/threads/{thread_id}/runs/stream")
+async def agent_runs_stream(thread_id: str, request: Request):
+    """Vercel compatibility: Stream agent execution for a thread"""
+    body = await request.json()
+    incoming = _normalize_incoming_messages((body.get("input") or {}).get("messages", []))
+
+    THREADS.setdefault(thread_id, [])
+    if incoming:
+        THREADS[thread_id].extend(incoming)
+
+    run_id = str(uuid.uuid4())
+
+    async def gen():
+        LAST_STREAM.clear()
+        try:
+            # 1. Send metadata event (SSE format)
+            meta = {
+                "run_id": run_id,
+                "thread_id": thread_id,
+                "assistant_id": body.get("assistant_id"),
+                "status": "running",
+            }
+            _record("metadata", meta)
+            yield f"event: metadata\ndata: {json.dumps(meta, ensure_ascii=False)}\n\n"
+
+            # 2. Call agent
+            reply = _call_agent(thread_id)
+            ai_msg = _new_msg("assistant", reply)
+            THREADS[thread_id].append(ai_msg)
+
+            # 3. Stream the message - send partial first with single message (not in array)
+            _record("messages/partial", ai_msg)
+            yield f"event: messages/partial\ndata: {json.dumps(ai_msg, ensure_ascii=False)}\n\n"
+
+            # 4. Brief delay to allow frontend to render partial
+            await asyncio.sleep(0.05)
+
+            # 5. Then confirm with final messages event (as array)
+            _record("messages", [ai_msg])
+            yield f"event: messages\ndata: {json.dumps([ai_msg], ensure_ascii=False)}\n\n"
+
+            # 6. Brief delay before end event
+            await asyncio.sleep(0.05)
+
+            # 7. Send end event with success status and complete thread state
+            end = {
+                "run_id": run_id,
+                "status": "success",
+                "thread_id": thread_id
+            }
+            _record("end", end)
+            yield f"event: end\ndata: {json.dumps(end, ensure_ascii=False)}\n\n"
+
+        except Exception as e:
+            _capture_error(thread_id, run_id, body, e)
+            err = {
+                "run_id": run_id,
+                "error": LAST_ERROR.get("error", "unknown error"),
+                "status": "error"
+            }
+            _record("error", err)
+            yield f"event: error\ndata: {json.dumps(err, ensure_ascii=False)}\n\n"
+
+            end = {
+                "run_id": run_id,
+                "status": "error",
+                "thread_id": thread_id
+            }
+            _record("end", end)
+            yield f"event: end\ndata: {json.dumps(end, ensure_ascii=False)}\n\n"
+
+    # Use StreamingResponse with proper SSE headers
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+            "Access-Control-Allow-Headers": "*",
+        },
+    )
+
+
+app.include_router(agent)
