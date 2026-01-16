@@ -9,9 +9,8 @@ from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.routing import APIRouter
-from sse_starlette.sse import EventSourceResponse
 
 import agent as agent_module
 from agent import AIMessage, HumanMessage, SystemMessage
@@ -283,80 +282,59 @@ async def runs_stream(thread_id: str, request: Request):
     async def gen():
         LAST_STREAM.clear()
         try:
-            # 1. Send metadata event (NDJSON format - just JSON + newline)
+            # 1. Send metadata event (SSE format)
             meta = {
-                "event": "metadata",
-                "data": {
-                    "run_id": run_id,
-                    "thread_id": thread_id,
-                    "assistant_id": body.get("assistant_id"),
-                    "status": "running",
-                }
+                "run_id": run_id,
+                "thread_id": thread_id,
+                "assistant_id": body.get("assistant_id"),
+                "status": "running",
             }
-            _record("metadata", meta["data"])
-            yield json.dumps(meta, ensure_ascii=False) + "\n"
+            _record("metadata", meta)
+            yield f"event: metadata\ndata: {json.dumps(meta, ensure_ascii=False)}\n\n"
 
             # 2. Call agent
             reply = _call_agent(thread_id)
             ai_msg = _new_msg("ai", reply)
             THREADS[thread_id].append(ai_msg)
 
-            # 3. Stream messages event - NDJSON format
+            # 3. Stream messages event in proper SSE format
+            # AgentChat expects: event: messages\ndata: [array of message objects]\n\n
             messages_data = [ai_msg]
             _record("messages", messages_data)
-            messages_event = {
-                "event": "messages",
-                "data": messages_data
-            }
-            yield json.dumps(messages_event, ensure_ascii=False) + "\n"
+            yield f"event: messages\ndata: {json.dumps(messages_data, ensure_ascii=False)}\n\n"
 
-            # 4. Send updates event (for compatibility)
-            updates_event = {
-                "event": "updates",
-                "data": {"messages": messages_data}
-            }
-            yield json.dumps(updates_event, ensure_ascii=False) + "\n"
-
-            # 5. Send end event
+            # 4. Send end event
             end = {
-                "event": "end",
-                "data": {
-                    "run_id": run_id,
-                    "status": "complete"
-                }
+                "run_id": run_id,
+                "status": "success"
             }
-            _record("end", end["data"])
-            yield json.dumps(end, ensure_ascii=False) + "\n"
+            _record("end", end)
+            yield f"event: end\ndata: {json.dumps(end, ensure_ascii=False)}\n\n"
 
         except Exception as e:
             _capture_error(thread_id, run_id, body, e)
             err = {
-                "event": "error",
-                "data": {
-                    "run_id": run_id,
-                    "error": LAST_ERROR.get("error", "unknown error")
-                }
+                "run_id": run_id,
+                "error": LAST_ERROR.get("error", "unknown error")
             }
-            _record("error", err["data"])
-            yield json.dumps(err, ensure_ascii=False) + "\n"
+            _record("error", err)
+            yield f"event: error\ndata: {json.dumps(err, ensure_ascii=False)}\n\n"
 
             end = {
-                "event": "end",
-                "data": {
-                    "run_id": run_id,
-                    "status": "failed"
-                }
+                "run_id": run_id,
+                "status": "error"
             }
-            _record("end", end["data"])
-            yield json.dumps(end, ensure_ascii=False) + "\n"
+            _record("end", end)
+            yield f"event: end\ndata: {json.dumps(end, ensure_ascii=False)}\n\n"
 
-    return EventSourceResponse(
+    # Use StreamingResponse with proper SSE headers
+    return StreamingResponse(
         gen(),
+        media_type="text/event-stream",
         headers={
-            "Cache-Control": "no-cache", 
+            "Cache-Control": "no-cache",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
-            "Content-Type": "application/x-ndjson",  # Specify NDJSON content type
         },
     )
 
