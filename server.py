@@ -106,22 +106,29 @@ def _record(event: str, data: Any) -> None:
 
 
 def _sanitize_history(history: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Ensure all messages in history have clean, properly formatted content"""
+    """Ensure all messages in history have clean, properly formatted content with all required SDK fields"""
     sanitized = []
     for msg in history:
         if not isinstance(msg, dict):
             continue
         
-        # Create a clean copy
-        clean_msg = {
-            "id": msg.get("id", f"msg_{uuid.uuid4().hex}"),
-            "type": msg.get("type", "human"),
-            "role": msg.get("role", "user"),
-            "content": msg.get("content", "")
-        }
+        # Extract and normalize role
+        role = str(msg.get("role", "user")).lower()
+        if role not in ("user", "assistant"):
+            role = "user"
         
-        # Ensure content is clean
-        content = clean_msg["content"]
+        # Extract and normalize type
+        msg_type = str(msg.get("type", "human")).lower()
+        if msg_type not in ("human", "ai"):
+            msg_type = "human" if role == "user" else "ai"
+        
+        # Get or create ID
+        msg_id = msg.get("id")
+        if not msg_id:
+            msg_id = f"msg_{uuid.uuid4().hex}"
+        
+        # Extract content - handle all possible formats
+        content = msg.get("content", "")
         if isinstance(content, str):
             # If content is a stringified list, try to extract text
             if content.startswith("[{") and "type" in content and "text" in content:
@@ -131,11 +138,30 @@ def _sanitize_history(history: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                     if isinstance(parsed, list):
                         for item in parsed:
                             if isinstance(item, dict) and item.get("type") == "text":
-                                text_parts.append(item.get("text", ""))
+                                text_parts.append(str(item.get("text", "")))
                     if text_parts:
-                        clean_msg["content"] = " ".join(text_parts)
+                        content = "\n".join(text_parts)
                 except:
-                    pass  # Keep original content if parsing fails
+                    pass
+        elif isinstance(content, list):
+            # Handle list of content blocks
+            text_parts = []
+            for item in content:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    text_parts.append(str(item.get("text", "")))
+                elif isinstance(item, str):
+                    text_parts.append(item)
+            content = "\n".join(text_parts) if text_parts else str(content)
+        else:
+            content = str(content) if content else ""
+        
+        # Create properly formatted message for SDK
+        clean_msg = {
+            "id": str(msg_id),
+            "type": msg_type,
+            "role": role,
+            "content": content.strip() if isinstance(content, str) else str(content)
+        }
         
         sanitized.append(clean_msg)
     
@@ -431,12 +457,6 @@ async def runs_stream(thread_id: str, request: Request):
             full_history = _sanitize_history(THREADS.get(thread_id, []))
             _record("messages", full_history)
             log.info(f"YIELDING messages event - full thread history with {len(full_history)} messages")
-            # Ensure all required fields are present for SDK compatibility
-            for msg in full_history:
-                if not msg.get("id"):
-                    msg["id"] = f"msg_{uuid.uuid4().hex}"
-                if not msg.get("type"):
-                    msg["type"] = "human" if msg.get("role") == "user" else "ai"
             messages_json = json.dumps(full_history, ensure_ascii=False)
             log.info(f"MESSAGES EVENT PAYLOAD: {messages_json}")
             yield f"event: messages\ndata: {messages_json}\n\n"
@@ -600,10 +620,8 @@ async def agent_runs_stream(thread_id: str, request: Request):
             for msg in full_history:
                 if not msg.get("id"):
                     msg["id"] = f"msg_{uuid.uuid4().hex}"
-                if not msg.get("type"):
-                    msg["type"] = "human" if msg.get("role") == "user" else "ai"
             messages_json = json.dumps(full_history, ensure_ascii=False)
-            log.info(f"MESSAGES EVENT PAYLOAD ({len(messages_json)} chars): {messages_json[:300]}...")
+            log.info(f"MESSAGES EVENT PAYLOAD: {messages_json}")
             yield f"event: messages\ndata: {messages_json}\n\n"
             await asyncio.sleep(0.01)
 
