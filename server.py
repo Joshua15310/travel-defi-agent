@@ -315,7 +315,11 @@ def thread_history_get(thread_id: str):
     """LangGraph SDK Standard: Get thread message history"""
     history = THREADS.get(thread_id, [])
     # Ensure all messages have clean content
-    return _sanitize_history(history)
+    result = _sanitize_history(history)
+    print(f"[DEBUG] GET /threads/{thread_id}/history returning {len(result)} messages")
+    for msg in result:
+        print(f"  - {msg.get('type')}/{msg.get('role')}: {msg.get('content')[:50]}...")
+    return result
 
 
 @app.post("/threads/{thread_id}/history")
@@ -323,7 +327,11 @@ def thread_history_post(thread_id: str):
     """LangGraph SDK Standard: Get thread message history"""
     history = THREADS.get(thread_id, [])
     # Ensure all messages have clean content
-    return _sanitize_history(history)
+    result = _sanitize_history(history)
+    print(f"[DEBUG] POST /threads/{thread_id}/history returning {len(result)} messages")
+    for msg in result:
+        print(f"  - {msg.get('type')}/{msg.get('role')}: {msg.get('content')[:50]}...")
+    return result
 
 
 @app.get("/debug/last_error")
@@ -357,9 +365,15 @@ async def runs_stream(thread_id: str, request: Request):
     body = await request.json()
     incoming = _normalize_incoming_messages((body.get("input") or {}).get("messages", []))
 
+    print(f"[DEBUG] /threads/{thread_id}/runs/stream - Received {len(incoming)} incoming messages")
+    for msg in incoming:
+        print(f"  - {msg.get('type')}/{msg.get('role')}: {msg.get('content')[:50]}...")
+
     THREADS.setdefault(thread_id, [])
     if incoming:
         THREADS[thread_id].extend(incoming)
+
+    print(f"[DEBUG] Thread {thread_id} now has {len(THREADS[thread_id])} messages before agent call")
 
     run_id = str(uuid.uuid4())
 
@@ -378,8 +392,11 @@ async def runs_stream(thread_id: str, request: Request):
 
             # 2. Call agent
             reply = _call_agent(thread_id)
+            print(f"[DEBUG] Agent reply: {reply[:100]}...")
             ai_msg = _new_msg("assistant", reply)  # Use "assistant" instead of "ai"
+            print(f"[DEBUG] Created AI message: type={ai_msg.get('type')}, role={ai_msg.get('role')}, content={ai_msg.get('content')[:50]}...")
             THREADS[thread_id].append(ai_msg)
+            print(f"[DEBUG] Thread {thread_id} now has {len(THREADS[thread_id])} messages after agent response")
 
             # 3. Stream the message - send partial first with single message (not in array)
             _record("messages/partial", ai_msg)
@@ -570,6 +587,32 @@ async def agent_runs_stream(thread_id: str, request: Request):
             "Access-Control-Allow-Headers": "*",
         },
     )
+
+
+# Debug endpoints for agent router (so they're accessible at /agent/debug/*)
+@agent.get("/debug/last_error")
+def agent_debug_last_error():
+    """Debug: Get last error"""
+    return LAST_ERROR or {"ok": True}
+
+
+@agent.get("/debug/last_stream")
+def agent_debug_last_stream():
+    """Debug: Get last stream events"""
+    return {"count": len(LAST_STREAM), "last": LAST_STREAM[-80:]}
+
+
+@agent.get("/debug/threads")
+def agent_debug_threads():
+    """Debug: Get all thread data"""
+    return {
+        "threads": {
+            tid: {
+                "message_count": len(msgs),
+                "messages": msgs
+            } for tid, msgs in THREADS.items()
+        }
+    }
 
 
 app.include_router(agent)
