@@ -586,10 +586,9 @@ async def agent_runs_stream(thread_id: str, request: Request):
 
             # 5. Then confirm with final messages event (as full thread history)
             full_history = _sanitize_history(THREADS.get(thread_id, []))
-            messages_payload = {"messages": full_history}
             _record("messages", full_history)
             log.info(f"YIELDING messages event - full thread history with {len(full_history)} messages")
-            messages_json = json.dumps(messages_payload, ensure_ascii=False)
+            messages_json = json.dumps(full_history, ensure_ascii=False)
             log.info(f"MESSAGES EVENT PAYLOAD ({len(messages_json)} chars): {messages_json[:250]}...")
             yield f"event: messages\ndata: {messages_json}\n\n"
             await asyncio.sleep(0.01)
