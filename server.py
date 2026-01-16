@@ -431,9 +431,13 @@ async def runs_stream(thread_id: str, request: Request):
             full_history = _sanitize_history(THREADS.get(thread_id, []))
             _record("messages", full_history)
             log.info(f"YIELDING messages event - full thread history with {len(full_history)} messages")
-            # For LangGraph SDK stream_mode="messages-tuple", send as a tuple: [[], [messages]]
-            messages_tuple = [[], full_history]
-            yield f"event: messages\ndata: {json.dumps(messages_tuple, ensure_ascii=False)}\n\n"
+            # Ensure all required fields are present for SDK compatibility
+            for msg in full_history:
+                if not msg.get("id"):
+                    msg["id"] = f"msg_{uuid.uuid4().hex}"
+                if not msg.get("type"):
+                    msg["type"] = "human" if msg.get("role") == "user" else "ai"
+            yield f"event: messages\ndata: {json.dumps(full_history, ensure_ascii=False)}\n\n"
             await asyncio.sleep(0.01)
 
             # 6. Brief delay before end event
@@ -590,10 +594,14 @@ async def agent_runs_stream(thread_id: str, request: Request):
             full_history = _sanitize_history(THREADS.get(thread_id, []))
             _record("messages", full_history)
             log.info(f"YIELDING messages event - full thread history with {len(full_history)} messages")
-            # For LangGraph SDK stream_mode="messages-tuple", send as a tuple: [[], [messages]]
-            messages_tuple = [[], full_history]
-            messages_json = json.dumps(messages_tuple, ensure_ascii=False)
-            log.info(f"MESSAGES EVENT PAYLOAD ({len(messages_json)} chars): {messages_json[:250]}...")
+            # Ensure all required fields are present for SDK compatibility
+            for msg in full_history:
+                if not msg.get("id"):
+                    msg["id"] = f"msg_{uuid.uuid4().hex}"
+                if not msg.get("type"):
+                    msg["type"] = "human" if msg.get("role") == "user" else "ai"
+            messages_json = json.dumps(full_history, ensure_ascii=False)
+            log.info(f"MESSAGES EVENT PAYLOAD ({len(messages_json)} chars): {messages_json[:300]}...")
             yield f"event: messages\ndata: {messages_json}\n\n"
             await asyncio.sleep(0.01)
 
