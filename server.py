@@ -437,7 +437,9 @@ async def runs_stream(thread_id: str, request: Request):
                     msg["id"] = f"msg_{uuid.uuid4().hex}"
                 if not msg.get("type"):
                     msg["type"] = "human" if msg.get("role") == "user" else "ai"
-            yield f"event: messages\ndata: {json.dumps(full_history, ensure_ascii=False)}\n\n"
+            messages_json = json.dumps(full_history, ensure_ascii=False)
+            log.info(f"MESSAGES EVENT PAYLOAD: {messages_json}")
+            yield f"event: messages\ndata: {messages_json}\n\n"
             await asyncio.sleep(0.01)
 
             # 6. Brief delay before end event
@@ -607,8 +609,6 @@ async def agent_runs_stream(thread_id: str, request: Request):
 
             # 6. Brief delay before end event
             await asyncio.sleep(0.5)  # Longer delay to ensure frontend processes all events
-
-            # 7. Send end event with success status and complete thread state
             end = {
                 "run_id": run_id,
                 "status": "success",
