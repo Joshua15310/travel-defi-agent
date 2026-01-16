@@ -427,10 +427,11 @@ async def runs_stream(thread_id: str, request: Request):
             # 4. Brief delay to allow frontend to render partial
             await asyncio.sleep(0.05)
 
-            # 5. Then confirm with final messages event (as array)
-            _record("messages", [ai_msg])
-            log.info(f"YIELDING messages event (array)")
-            yield f"event: messages\ndata: {json.dumps([ai_msg], ensure_ascii=False)}\n\n"
+            # 5. Then confirm with final messages event (as full thread history)
+            full_history = _sanitize_history(THREADS.get(thread_id, []))
+            _record("messages", full_history)
+            log.info(f"YIELDING messages event - full thread history with {len(full_history)} messages")
+            yield f"event: messages\ndata: {json.dumps(full_history, ensure_ascii=False)}\n\n"
             await asyncio.sleep(0.01)
 
             # 6. Brief delay before end event
@@ -583,14 +584,15 @@ async def agent_runs_stream(thread_id: str, request: Request):
             # 4. Brief delay to allow frontend to render partial
             await asyncio.sleep(0.05)
 
-            # 5. Then confirm with final messages event (as array)
-            _record("messages", [ai_msg])
-            log.info(f"YIELDING messages event (array)")
-            yield f"event: messages\ndata: {json.dumps([ai_msg], ensure_ascii=False)}\n\n"
+            # 5. Then confirm with final messages event (as full thread history)
+            full_history = _sanitize_history(THREADS.get(thread_id, []))
+            _record("messages", full_history)
+            log.info(f"YIELDING messages event - full thread history with {len(full_history)} messages")
+            yield f"event: messages\ndata: {json.dumps(full_history, ensure_ascii=False)}\n\n"
             await asyncio.sleep(0.01)
 
             # 6. Brief delay before end event
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0.5)  # Longer delay to ensure frontend processes all events
 
             # 7. Send end event with success status and complete thread state
             end = {
@@ -601,6 +603,12 @@ async def agent_runs_stream(thread_id: str, request: Request):
             _record("end", end)
             log.info(f"YIELDING end event - stream complete")
             yield f"event: end\ndata: {json.dumps(end, ensure_ascii=False)}\n\n"
+            
+            # Keep stream alive for a moment to ensure all events are received
+            await asyncio.sleep(0.2)
+            
+            # Keep stream alive for a moment to ensure all events are received
+            await asyncio.sleep(0.2)
             log.info(f"SSE stream finished for thread {thread_id}")
 
         except Exception as e:
