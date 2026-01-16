@@ -444,28 +444,22 @@ async def runs_stream(thread_id: str, request: Request):
             THREADS[thread_id].append(ai_msg)
             log.info(f"Thread {thread_id} now has {len(THREADS[thread_id])} messages after agent response")
 
-            # 3. Stream the message - send partial first with single message (not in array)
-            _record("messages/partial", ai_msg)
-            log.info(f"YIELDING messages/partial event: {ai_msg.get('content')[:50]}...")
-            yield f"event: messages/partial\ndata: {json.dumps(ai_msg, ensure_ascii=False)}\n\n"
-            await asyncio.sleep(0.01)
-
-            # 4. Brief delay to allow frontend to render partial
-            await asyncio.sleep(0.05)
-
-            # 5. Send values event with messages (LangGraph SDK persists via values event)
+            # 3. Get full conversation history
             full_history = _sanitize_history(THREADS.get(thread_id, []))
+            log.info(f"Full thread history: {len(full_history)} messages")
+
+            # 4. Send values event with complete conversation state
             values_payload = {
                 "messages": full_history
             }
             _record("values", values_payload)
-            log.info(f"YIELDING values event - full thread history with {len(full_history)} messages")
+            log.info(f"YIELDING values event with {len(full_history)} messages")
             values_json = json.dumps(values_payload, ensure_ascii=False)
             log.info(f"VALUES EVENT PAYLOAD: {values_json}")
             yield f"event: values\ndata: {values_json}\n\n"
-            await asyncio.sleep(0.01)
+            await asyncio.sleep(0.1)
 
-            # 6. Brief delay before end event
+            # 5. Brief delay before end event
             await asyncio.sleep(0.05)
 
             # 7. Send end event with success status and complete thread state
@@ -606,28 +600,22 @@ async def agent_runs_stream(thread_id: str, request: Request):
             THREADS[thread_id].append(ai_msg)
             log.info(f"Thread {thread_id} now has {len(THREADS[thread_id])} messages after agent response")
 
-            # 3. Stream the message - send partial first with single message (not in array)
-            _record("messages/partial", ai_msg)
-            log.info(f"YIELDING messages/partial event: {ai_msg.get('content')[:50]}...")
-            yield f"event: messages/partial\ndata: {json.dumps(ai_msg, ensure_ascii=False)}\n\n"
-            await asyncio.sleep(0.01)
-
-            # 4. Brief delay to allow frontend to render partial
-            await asyncio.sleep(0.05)
-
-            # 5. Send values event with messages (LangGraph SDK persists via values event)
+            # 3. Get full conversation history
             full_history = _sanitize_history(THREADS.get(thread_id, []))
+            log.info(f"Full thread history: {len(full_history)} messages")
+
+            # 4. Send values event with complete conversation state
             values_payload = {
                 "messages": full_history
             }
             _record("values", values_payload)
-            log.info(f"YIELDING values event - full thread history with {len(full_history)} messages")
+            log.info(f"YIELDING values event with {len(full_history)} messages")
             values_json = json.dumps(values_payload, ensure_ascii=False)
             log.info(f"VALUES EVENT PAYLOAD: {values_json}")
             yield f"event: values\ndata: {values_json}\n\n"
-            await asyncio.sleep(0.01)
+            await asyncio.sleep(0.1)
 
-            # 6. Brief delay before end event
+            # 5. Brief delay before end event
             await asyncio.sleep(0.5)  # Longer delay to ensure frontend processes all events
             end = {
                 "run_id": run_id,
