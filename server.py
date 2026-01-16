@@ -211,9 +211,14 @@ def _extract_ai_text(result: Any) -> str:
         if isinstance(msgs, list) and msgs:
             last = msgs[-1]
             if hasattr(last, "content"):
-                return str(last.content)
+                text = str(last.content)
+                log.info(f"_extract_ai_text: extracted from message object: {text[:100]}")
+                return text
             if isinstance(last, dict) and isinstance(last.get("content"), str):
-                return last["content"]
+                text = last["content"]
+                log.info(f"_extract_ai_text: extracted from dict: {text[:100]}")
+                return text
+    log.warning(f"_extract_ai_text: Using fallback response, result type: {type(result)}, result: {str(result)[:200]}")
     return "I'm here—tell me what you want to book."
 
 
@@ -226,11 +231,15 @@ def _call_agent(thread_id: str) -> str:
         )
 
     lc_history = _to_langchain_messages(THREADS.get(thread_id, []))
+    log.info(f"_call_agent: calling agent with {len(lc_history)} messages")
     result = agent_module.app.invoke(
         {"messages": lc_history},
         config={"configurable": {"thread_id": thread_id}},
     )
-    return _extract_ai_text(result)
+    log.info(f"_call_agent: raw result keys: {list(result.keys()) if isinstance(result, dict) else type(result)}")
+    text = _extract_ai_text(result)
+    log.info(f"_call_agent: final extracted text: {text[:100]}")
+    return text
 
 
 def _capture_error(thread_id: str, run_id: str, body: Any, e: Exception):
