@@ -5,7 +5,7 @@ import os
 import traceback
 import uuid
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,6 +17,10 @@ import agent as agent_module
 from agent import AIMessage, HumanMessage, SystemMessage
 
 
+# -----------------------------------------------------------------------------
+# App + CORS
+# -----------------------------------------------------------------------------
+
 app = FastAPI()
 
 app.add_middleware(
@@ -27,7 +31,7 @@ app.add_middleware(
         "http://localhost:5173",
         "*",
     ],
-    allow_credentials=False,
+    allow_credentials=False,  # keep False with wildcard
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["*"],
@@ -35,26 +39,30 @@ app.add_middleware(
 
 DEBUG = os.getenv("DEBUG", "0") == "1"
 
+
+# -----------------------------------------------------------------------------
+# In-memory stores
+# -----------------------------------------------------------------------------
+
 THREADS: Dict[str, List[Dict[str, str]]] = {}
+
 LAST_ERROR: Dict[str, Any] = {}
-LAST_STREAM: List[Dict[str, Any]] = []  # rolling capture of last emitted SSE chunks
+LAST_STREAM: List[Dict[str, Any]] = []
+LAST_SNAPSHOT: Dict[str, Any] = {}
 
 
 # -----------------------------------------------------------------------------
 # Helpers
 # -----------------------------------------------------------------------------
 
+def _now() -> str:
+    return datetime.utcnow().isoformat() + "Z"
+
+
 def _record_stream(event: str, data: Any):
-    # keep last ~200 chunks
-    LAST_STREAM.append(
-        {
-            "time": datetime.utcnow().isoformat() + "Z",
-            "event": event,
-            "data": data,
-        }
-    )
-    if len(LAST_STREAM) > 200:
-        del LAST_STREAM[:50]
+    LAST_STREAM.append({"time": _now(), "event": event, "data": data})
+    if len(LAST_STREAM) > 250:
+        del LAST_STREAM[:100]
 
 
 def _normalize_messages(messages: Any) -> List[Dict[str, str]]:
@@ -120,14 +128,20 @@ def _info_payload() -> Dict[str, Any]:
 
 
 def _call_agent(thread_id: str) -> str:
+    """
+    Requires agent.py to export:
+      app = workflow_app
+      graph = workflow_app
+    """
     if not hasattr(agent_module, "app"):
         raise RuntimeError(
-            "agent.py does not export `app`. Add at bottom of agent.py:\n\n"
+            "agent.py does not export `app`. Add at bottom of agent.py:\n"
             "app = workflow_app\n"
             "graph = workflow_app\n"
         )
 
     lc_history = _to_langchain_messages(THREADS.get(thread_id, []))
+
     result = agent_module.app.invoke(
         {"messages": lc_history},
         config={"configurable": {"thread_id": thread_id}},
@@ -140,7 +154,7 @@ def _capture_error(thread_id: str, run_id: str, request_body: Any, e: Exception)
     LAST_ERROR.clear()
     LAST_ERROR.update(
         {
-            "time": datetime.utcnow().isoformat() + "Z",
+            "time": _now(),
             "thread_id": thread_id,
             "run_id": run_id,
             "error": f"{type(e).__name__}: {str(e)}",
@@ -180,6 +194,7 @@ async def run(request: Request):
     messages = _normalize_messages(body.get("messages", []))
     if not messages:
         return JSONResponse(status_code=400, content={"error": "Missing messages (expected list of {role, content})"})
+
     thread_id = "cto-run"
     THREADS[thread_id] = messages
     reply = _call_agent(thread_id)
@@ -227,24 +242,32 @@ def debug_last_error():
 
 @agent.get("/debug/last_stream")
 def debug_last_stream():
+    return {"count": len(LAST_STREAM), "last": LAST_STREAM[-80:]}
+
+
+@agent.get("/debug/snapshot")
+def debug_snapshot():
+    """
+    One endpoint to show the last run end-to-end (request -> stream -> error if any).
+    """
     return {
-        "count": len(LAST_STREAM),
-        "last": LAST_STREAM[-50:],  # last 50 chunks
+        "time": _now(),
+        "last_snapshot": LAST_SNAPSHOT or {"note": "No snapshot yet. Send a message first."},
+        "last_error": LAST_ERROR or None,
+        "last_stream_tail": LAST_STREAM[-30:],
     }
 
 
 @agent.post("/threads/{thread_id}/runs/stream")
 async def runs_stream(thread_id: str, request: Request):
     """
-    Compatibility-first SSE:
-    - Sends metadata
-    - Sends a message in TWO common shapes:
-        A) list-of-message-objects (used by some clients)
-        B) {messages:[...]} wrapper (used by others)
-    - Sends keepalive pings
-    - Ends cleanly
+    Key fix: DO NOT end with status 'complete' for normal chat turns.
+    AgentChat is treating that as 'close and reset UI'.
 
-    This prevents AgentChat UI from resetting due to schema mismatch.
+    We emit:
+      metadata -> messages -> ping -> end(status='running')
+
+    Also we ONLY emit 'messages' (no duplicate 'values').
     """
     body = await request.json()
     incoming = _normalize_messages((body.get("input") or {}).get("messages", []))
@@ -256,8 +279,8 @@ async def runs_stream(thread_id: str, request: Request):
     run_id = str(uuid.uuid4())
 
     async def gen():
-        # reset stream recorder for this run
         LAST_STREAM.clear()
+        LAST_SNAPSHOT.clear()
 
         try:
             meta = {
@@ -279,24 +302,27 @@ async def runs_stream(thread_id: str, request: Request):
                 "content": reply,
             }
 
-            # Shape A: list of messages
-            payload_a = [msg_obj]
-            _record_stream("messages", payload_a)
-            yield {"event": "messages", "data": json.dumps(payload_a, ensure_ascii=False)}
+            _record_stream("messages", [msg_obj])
+            yield {"event": "messages", "data": json.dumps([msg_obj], ensure_ascii=False)}
 
-            # Shape B: wrapper with messages
-            payload_b = {"messages": [msg_obj], "requirements_complete": False}
-            _record_stream("values", payload_b)
-            yield {"event": "values", "data": json.dumps(payload_b, ensure_ascii=False)}
-
-            # Keepalive ping (some UIs reset on immediate close)
             ping = {"run_id": run_id, "ok": True}
             _record_stream("ping", ping)
             yield {"event": "ping", "data": json.dumps(ping, ensure_ascii=False)}
 
-            end = {"run_id": run_id, "status": "complete"}
+            # IMPORTANT: not 'complete'
+            end = {"run_id": run_id, "status": "running"}
             _record_stream("end", end)
             yield {"event": "end", "data": json.dumps(end, ensure_ascii=False)}
+
+            LAST_SNAPSHOT.update(
+                {
+                    "time": _now(),
+                    "thread_id": thread_id,
+                    "run_id": run_id,
+                    "request_body": body if DEBUG else {"note": "Set DEBUG=1 to include request body"},
+                    "reply_preview": reply[:400],
+                }
+            )
 
         except Exception as e:
             _capture_error(thread_id=thread_id, run_id=run_id, request_body=body, e=e)
