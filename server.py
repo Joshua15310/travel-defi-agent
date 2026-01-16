@@ -5,7 +5,7 @@ import os
 import traceback
 import uuid
 from datetime import datetime
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,10 +16,6 @@ from sse_starlette.sse import EventSourceResponse
 import agent as agent_module
 from agent import AIMessage, HumanMessage, SystemMessage
 
-
-# -----------------------------------------------------------------------------
-# App + CORS
-# -----------------------------------------------------------------------------
 
 app = FastAPI()
 
@@ -41,12 +37,32 @@ DEBUG = os.getenv("DEBUG", "0") == "1"
 
 
 # -----------------------------------------------------------------------------
-# In-memory stores
+# Data model (what we store == what we stream == what history returns)
 # -----------------------------------------------------------------------------
 
-THREADS: Dict[str, List[Dict[str, str]]] = {}
+Role = Literal["user", "ai", "assistant", "system"]
+MsgType = Literal["human", "ai", "system"]
+
+def _new_msg(role: Role, content: str) -> Dict[str, Any]:
+    role_norm: Role = role if role in ("user", "ai", "assistant", "system") else "user"
+    msg_type: MsgType = "human"
+    if role_norm in ("ai", "assistant"):
+        msg_type = "ai"
+    elif role_norm == "system":
+        msg_type = "system"
+
+    return {
+        "id": f"msg_{uuid.uuid4().hex}",
+        "type": msg_type,
+        "role": "ai" if role_norm in ("ai", "assistant") else role_norm,
+        "content": content or "",
+    }
+
+
+# In-memory stores (reset on redeploy)
+THREADS: Dict[str, List[Dict[str, Any]]] = {}
 LAST_ERROR: Dict[str, Any] = {}
-LAST_STREAM: List[Dict[str, Any]] = []  # ✅ FIX: must be a list, not a dict
+LAST_STREAM: List[Dict[str, Any]] = []
 
 
 # -----------------------------------------------------------------------------
@@ -57,30 +73,40 @@ def _now() -> str:
     return datetime.utcnow().isoformat() + "Z"
 
 
-def _normalize_messages(messages: Any) -> List[Dict[str, str]]:
+def _record(event: str, data: Any) -> None:
+    LAST_STREAM.append({"time": _now(), "event": event, "data": data})
+    if len(LAST_STREAM) > 250:
+        del LAST_STREAM[:100]
+
+
+def _normalize_incoming_messages(messages: Any) -> List[Dict[str, Any]]:
+    """
+    AgentChat sends input.messages like: [{role, content, ...}, ...]
+    We convert them into the same canonical ChatMessage objects we store/stream.
+    """
     if not isinstance(messages, list):
         return []
-    out: List[Dict[str, str]] = []
+    out: List[Dict[str, Any]] = []
     for m in messages:
-        if isinstance(m, dict):
-            out.append(
-                {
-                    "role": m.get("role", "user"),
-                    "content": m.get("content", ""),
-                }
-            )
+        if not isinstance(m, dict):
+            continue
+        role = str(m.get("role", "user"))
+        content = str(m.get("content", ""))
+        out.append(_new_msg(role=role, content=content))
     return out
 
 
-def _to_langchain_messages(history: List[Dict[str, str]]):
+def _to_langchain_messages(history: List[Dict[str, Any]]):
     lc = []
     for m in history:
-        if m["role"] == "system":
-            lc.append(SystemMessage(content=m["content"]))
-        elif m["role"] in ("ai", "assistant"):
-            lc.append(AIMessage(content=m["content"]))
+        role = m.get("role", "user")
+        content = m.get("content", "")
+        if role == "system":
+            lc.append(SystemMessage(content=content))
+        elif role == "ai":
+            lc.append(AIMessage(content=content))
         else:
-            lc.append(HumanMessage(content=m["content"]))
+            lc.append(HumanMessage(content=content))
     return lc
 
 
@@ -91,6 +117,8 @@ def _extract_ai_text(result: Any) -> str:
             last = msgs[-1]
             if hasattr(last, "content"):
                 return str(last.content)
+            if isinstance(last, dict) and isinstance(last.get("content"), str):
+                return last["content"]
     return "I’m here—tell me what you want to book."
 
 
@@ -119,27 +147,12 @@ def _capture_error(thread_id: str, run_id: str, body: Any, e: Exception):
             "run_id": run_id,
             "error": f"{type(e).__name__}: {str(e)}",
             "traceback": traceback.format_exc(),
-            "request_body": body if DEBUG else "Enable DEBUG=1 to see request body",
+            "request_body": body if DEBUG else {"note": "Set DEBUG=1 to include request body"},
         }
     )
 
 
-# -----------------------------------------------------------------------------
-# Root endpoints (CTO)
-# -----------------------------------------------------------------------------
-
-@app.get("/")
-def root():
-    return {"status": "ok"}
-
-
-@app.get("/status")
-def status():
-    return {"status": "ok"}
-
-
-@app.get("/assistants/search")
-def assistants_search():
+def _assistant_catalog() -> Dict[str, Any]:
     return {
         "agents": [
             {
@@ -151,8 +164,7 @@ def assistants_search():
     }
 
 
-@app.get("/info")
-def info():
+def _info_payload() -> Dict[str, Any]:
     return {
         "graphs": {
             "agent": {
@@ -163,15 +175,47 @@ def info():
     }
 
 
+# -----------------------------------------------------------------------------
+# Root endpoints
+# -----------------------------------------------------------------------------
+
+@app.get("/")
+def root():
+    return {"status": "ok"}
+
+
+@app.head("/")
+def root_head():
+    return JSONResponse(content=None, status_code=200)
+
+
+@app.get("/status")
+def status():
+    return {"status": "ok"}
+
+
+@app.get("/assistants/search")
+def assistants_search():
+    return _assistant_catalog()
+
+
+@app.get("/info")
+def info():
+    return _info_payload()
+
+
 @app.post("/run")
 async def run(request: Request):
     body = await request.json()
-    messages = _normalize_messages(body.get("messages", []))
-    if not messages:
+    incoming = _normalize_incoming_messages(body.get("messages", []))
+    if not incoming:
         return JSONResponse(status_code=400, content={"error": "Missing messages"})
 
-    THREADS["cto-run"] = messages
-    reply = _call_agent("cto-run")
+    thread_id = "cto-run"
+    THREADS[thread_id] = incoming
+    reply = _call_agent(thread_id)
+    THREADS[thread_id].append(_new_msg("ai", reply))
+
     return {"result": {"reply": reply}}
 
 
@@ -184,12 +228,12 @@ agent = APIRouter(prefix="/agent")
 
 @agent.get("/info")
 def agent_info():
-    return info()
+    return _info_payload()
 
 
 @agent.get("/assistants/search")
 def agent_assistants_search():
-    return assistants_search()
+    return _assistant_catalog()
 
 
 @agent.post("/threads")
@@ -204,8 +248,14 @@ def threads_search():
     return [{"thread_id": t} for t in THREADS.keys()]
 
 
+# IMPORTANT: support BOTH GET and POST (different AgentChat builds use different methods)
+@agent.get("/threads/{thread_id}/history")
+def thread_history_get(thread_id: str):
+    return THREADS.get(thread_id, [])
+
+
 @agent.post("/threads/{thread_id}/history")
-def thread_history(thread_id: str):
+def thread_history_post(thread_id: str):
     return THREADS.get(thread_id, [])
 
 
@@ -222,51 +272,53 @@ def debug_last_stream():
 @agent.post("/threads/{thread_id}/runs/stream")
 async def runs_stream(thread_id: str, request: Request):
     body = await request.json()
-    incoming = _normalize_messages((body.get("input") or {}).get("messages", []))
+    incoming = _normalize_incoming_messages((body.get("input") or {}).get("messages", []))
 
     THREADS.setdefault(thread_id, [])
-    THREADS[thread_id].extend(incoming)
+    if incoming:
+        THREADS[thread_id].extend(incoming)
 
     run_id = str(uuid.uuid4())
 
     async def gen():
+        LAST_STREAM.clear()
         try:
-            # metadata
             meta = {
                 "run_id": run_id,
                 "thread_id": thread_id,
                 "assistant_id": body.get("assistant_id"),
                 "status": "running",
             }
-            LAST_STREAM.clear()
-            LAST_STREAM.append({"event": "metadata", "data": meta})
+            _record("metadata", meta)
             yield {"event": "metadata", "data": json.dumps(meta, ensure_ascii=False)}
 
-            # message
             reply = _call_agent(thread_id)
-            THREADS[thread_id].append({"role": "ai", "content": reply})
+            ai_msg = _new_msg("ai", reply)
+            THREADS[thread_id].append(ai_msg)
 
-            msg = {
-                "id": f"msg_{uuid.uuid4().hex}",
-                "type": "ai",
-                "role": "ai",
-                "content": reply,
-            }
-            LAST_STREAM.append({"event": "messages", "data": [msg]})
-            yield {"event": "messages", "data": json.dumps([msg], ensure_ascii=False)}
+            # Stream the same shape we store/return from history
+            _record("messages", [ai_msg])
+            yield {"event": "messages", "data": json.dumps([ai_msg], ensure_ascii=False)}
 
-            # keepalive ping
             ping = {"run_id": run_id, "ok": True}
-            LAST_STREAM.append({"event": "ping", "data": ping})
+            _record("ping", ping)
             yield {"event": "ping", "data": json.dumps(ping, ensure_ascii=False)}
 
-            # No "end" event (AgentChat may reset UI on end)
+            # Bring back end so the UI stops "loading",
+            # but now history refresh will not wipe the message.
+            end = {"run_id": run_id, "status": "complete"}
+            _record("end", end)
+            yield {"event": "end", "data": json.dumps(end, ensure_ascii=False)}
 
         except Exception as e:
             _capture_error(thread_id, run_id, body, e)
-            err = {"run_id": run_id, "error": LAST_ERROR["error"]}
-            LAST_STREAM.append({"event": "error", "data": err})
+            err = {"run_id": run_id, "error": LAST_ERROR.get("error", "unknown error")}
+            _record("error", err)
             yield {"event": "error", "data": json.dumps(err, ensure_ascii=False)}
+
+            end = {"run_id": run_id, "status": "failed"}
+            _record("end", end)
+            yield {"event": "end", "data": json.dumps(end, ensure_ascii=False)}
 
     return EventSourceResponse(
         gen(),
