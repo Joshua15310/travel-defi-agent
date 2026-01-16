@@ -5,7 +5,7 @@ import os
 import traceback
 import uuid
 from datetime import datetime
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,10 +17,6 @@ import agent as agent_module
 from agent import AIMessage, HumanMessage, SystemMessage
 
 
-# -----------------------------------------------------------------------------
-# App + CORS
-# -----------------------------------------------------------------------------
-
 app = FastAPI()
 
 app.add_middleware(
@@ -31,7 +27,7 @@ app.add_middleware(
         "http://localhost:5173",
         "*",
     ],
-    allow_credentials=False,  # keep False when "*" is used
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["*"],
@@ -39,16 +35,27 @@ app.add_middleware(
 
 DEBUG = os.getenv("DEBUG", "0") == "1"
 
-# In-memory thread store (resets on redeploy)
 THREADS: Dict[str, List[Dict[str, str]]] = {}
-
-# Last error capture for fast debugging
 LAST_ERROR: Dict[str, Any] = {}
+LAST_STREAM: List[Dict[str, Any]] = []  # rolling capture of last emitted SSE chunks
 
 
 # -----------------------------------------------------------------------------
 # Helpers
 # -----------------------------------------------------------------------------
+
+def _record_stream(event: str, data: Any):
+    # keep last ~200 chunks
+    LAST_STREAM.append(
+        {
+            "time": datetime.utcnow().isoformat() + "Z",
+            "event": event,
+            "data": data,
+        }
+    )
+    if len(LAST_STREAM) > 200:
+        del LAST_STREAM[:50]
+
 
 def _normalize_messages(messages: Any) -> List[Dict[str, str]]:
     if not isinstance(messages, list):
@@ -78,7 +85,6 @@ def _to_langchain_messages(history: List[Dict[str, str]]):
 
 
 def _extract_ai_text(result: Any) -> str:
-    # LangGraph often returns dict with "messages"
     if isinstance(result, dict):
         msgs = result.get("messages")
         if isinstance(msgs, list) and msgs:
@@ -114,14 +120,6 @@ def _info_payload() -> Dict[str, Any]:
 
 
 def _call_agent(thread_id: str) -> str:
-    """
-    Calls the compiled LangGraph app exposed by agent.py:
-
-      app = workflow_app
-      graph = workflow_app
-
-    Uses MemorySaver via configurable thread_id.
-    """
     if not hasattr(agent_module, "app"):
         raise RuntimeError(
             "agent.py does not export `app`. Add at bottom of agent.py:\n\n"
@@ -130,7 +128,6 @@ def _call_agent(thread_id: str) -> str:
         )
 
     lc_history = _to_langchain_messages(THREADS.get(thread_id, []))
-
     result = agent_module.app.invoke(
         {"messages": lc_history},
         config={"configurable": {"thread_id": thread_id}},
@@ -154,7 +151,7 @@ def _capture_error(thread_id: str, run_id: str, request_body: Any, e: Exception)
 
 
 # -----------------------------------------------------------------------------
-# Root endpoints (CTO checks)
+# Root endpoints (CTO)
 # -----------------------------------------------------------------------------
 
 @app.get("/")
@@ -183,8 +180,6 @@ async def run(request: Request):
     messages = _normalize_messages(body.get("messages", []))
     if not messages:
         return JSONResponse(status_code=400, content={"error": "Missing messages (expected list of {role, content})"})
-
-    # CTO runs are stateless; still use a stable thread id to allow MemorySaver to work if needed
     thread_id = "cto-run"
     THREADS[thread_id] = messages
     reply = _call_agent(thread_id)
@@ -206,11 +201,6 @@ def agent_info():
 @agent.get("/assistants/search")
 def agent_assistants_search():
     return _assistant_catalog()
-
-
-@agent.post("/run")
-async def agent_run(request: Request):
-    return await run(request)
 
 
 @agent.post("/threads")
@@ -235,12 +225,26 @@ def debug_last_error():
     return LAST_ERROR or {"ok": True, "message": "No errors captured yet."}
 
 
+@agent.get("/debug/last_stream")
+def debug_last_stream():
+    return {
+        "count": len(LAST_STREAM),
+        "last": LAST_STREAM[-50:],  # last 50 chunks
+    }
+
+
 @agent.post("/threads/{thread_id}/runs/stream")
 async def runs_stream(thread_id: str, request: Request):
     """
-    Stream in a shape AgentChat expects:
-      metadata -> messages -> end
-    using SSE event types (event: metadata/messages/end) and JSON payload in data:.
+    Compatibility-first SSE:
+    - Sends metadata
+    - Sends a message in TWO common shapes:
+        A) list-of-message-objects (used by some clients)
+        B) {messages:[...]} wrapper (used by others)
+    - Sends keepalive pings
+    - Ends cleanly
+
+    This prevents AgentChat UI from resetting due to schema mismatch.
     """
     body = await request.json()
     incoming = _normalize_messages((body.get("input") or {}).get("messages", []))
@@ -252,71 +256,62 @@ async def runs_stream(thread_id: str, request: Request):
     run_id = str(uuid.uuid4())
 
     async def gen():
+        # reset stream recorder for this run
+        LAST_STREAM.clear()
+
         try:
-            # 1) metadata first
-            yield {
-                "event": "metadata",
-                "data": json.dumps(
-                    {
-                        "run_id": run_id,
-                        "thread_id": thread_id,
-                        "assistant_id": body.get("assistant_id"),
-                        "status": "running",
-                    },
-                    ensure_ascii=False,
-                ),
+            meta = {
+                "run_id": run_id,
+                "thread_id": thread_id,
+                "assistant_id": body.get("assistant_id"),
+                "status": "running",
             }
+            _record_stream("metadata", meta)
+            yield {"event": "metadata", "data": json.dumps(meta, ensure_ascii=False)}
 
-            # 2) call agent
             reply = _call_agent(thread_id)
-
-            # persist history
             THREADS[thread_id].append({"role": "ai", "content": reply})
 
-            # 3) stream message
-            yield {
-                "event": "messages",
-                "data": json.dumps(
-                    [
-                        {
-                            "id": f"msg_{uuid.uuid4().hex}",
-                            "type": "ai",
-                            "role": "ai",
-                            "content": reply,
-                        }
-                    ],
-                    ensure_ascii=False,
-                ),
+            msg_obj = {
+                "id": f"msg_{uuid.uuid4().hex}",
+                "type": "ai",
+                "role": "ai",
+                "content": reply,
             }
 
-            # 4) end
-            yield {
-                "event": "end",
-                "data": json.dumps({"run_id": run_id, "status": "complete"}, ensure_ascii=False),
-            }
+            # Shape A: list of messages
+            payload_a = [msg_obj]
+            _record_stream("messages", payload_a)
+            yield {"event": "messages", "data": json.dumps(payload_a, ensure_ascii=False)}
+
+            # Shape B: wrapper with messages
+            payload_b = {"messages": [msg_obj], "requirements_complete": False}
+            _record_stream("values", payload_b)
+            yield {"event": "values", "data": json.dumps(payload_b, ensure_ascii=False)}
+
+            # Keepalive ping (some UIs reset on immediate close)
+            ping = {"run_id": run_id, "ok": True}
+            _record_stream("ping", ping)
+            yield {"event": "ping", "data": json.dumps(ping, ensure_ascii=False)}
+
+            end = {"run_id": run_id, "status": "complete"}
+            _record_stream("end", end)
+            yield {"event": "end", "data": json.dumps(end, ensure_ascii=False)}
 
         except Exception as e:
             _capture_error(thread_id=thread_id, run_id=run_id, request_body=body, e=e)
 
-            # Stream error in-protocol so UI doesn't silently blank
-            yield {
-                "event": "error",
-                "data": json.dumps(
-                    {"run_id": run_id, "error": LAST_ERROR.get("error", "unknown error")},
-                    ensure_ascii=False,
-                ),
-            }
-            yield {
-                "event": "end",
-                "data": json.dumps({"run_id": run_id, "status": "failed"}, ensure_ascii=False),
-            }
+            err = {"run_id": run_id, "error": LAST_ERROR.get("error", "unknown error")}
+            _record_stream("error", err)
+            yield {"event": "error", "data": json.dumps(err, ensure_ascii=False)}
+
+            end = {"run_id": run_id, "status": "failed"}
+            _record_stream("end", end)
+            yield {"event": "end", "data": json.dumps(end, ensure_ascii=False)}
 
     return EventSourceResponse(
         gen(),
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-        },
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
     )
 
 
