@@ -406,7 +406,9 @@ async def runs_stream(thread_id: str, request: Request):
                 "status": "running",
             }
             _record("metadata", meta)
+            log.info(f"YIELDING metadata event to client")
             yield f"event: metadata\ndata: {json.dumps(meta, ensure_ascii=False)}\n\n"
+            await asyncio.sleep(0.01)
 
             # 2. Call agent
             reply = _call_agent(thread_id)
@@ -418,14 +420,18 @@ async def runs_stream(thread_id: str, request: Request):
 
             # 3. Stream the message - send partial first with single message (not in array)
             _record("messages/partial", ai_msg)
+            log.info(f"YIELDING messages/partial event: {ai_msg.get('content')[:50]}...")
             yield f"event: messages/partial\ndata: {json.dumps(ai_msg, ensure_ascii=False)}\n\n"
+            await asyncio.sleep(0.01)
 
             # 4. Brief delay to allow frontend to render partial
             await asyncio.sleep(0.05)
 
             # 5. Then confirm with final messages event (as array)
             _record("messages", [ai_msg])
+            log.info(f"YIELDING messages event (array)")
             yield f"event: messages\ndata: {json.dumps([ai_msg], ensure_ascii=False)}\n\n"
+            await asyncio.sleep(0.01)
 
             # 6. Brief delay before end event
             await asyncio.sleep(0.05)
@@ -556,7 +562,9 @@ async def agent_runs_stream(thread_id: str, request: Request):
                 "status": "running",
             }
             _record("metadata", meta)
+            log.info(f"YIELDING metadata event to client")
             yield f"event: metadata\ndata: {json.dumps(meta, ensure_ascii=False)}\n\n"
+            await asyncio.sleep(0.01)
 
             # 2. Call agent
             reply = _call_agent(thread_id)
@@ -568,14 +576,18 @@ async def agent_runs_stream(thread_id: str, request: Request):
 
             # 3. Stream the message - send partial first with single message (not in array)
             _record("messages/partial", ai_msg)
+            log.info(f"YIELDING messages/partial event: {ai_msg.get('content')[:50]}...")
             yield f"event: messages/partial\ndata: {json.dumps(ai_msg, ensure_ascii=False)}\n\n"
+            await asyncio.sleep(0.01)
 
             # 4. Brief delay to allow frontend to render partial
             await asyncio.sleep(0.05)
 
             # 5. Then confirm with final messages event (as array)
             _record("messages", [ai_msg])
+            log.info(f"YIELDING messages event (array)")
             yield f"event: messages\ndata: {json.dumps([ai_msg], ensure_ascii=False)}\n\n"
+            await asyncio.sleep(0.01)
 
             # 6. Brief delay before end event
             await asyncio.sleep(0.05)
@@ -587,7 +599,9 @@ async def agent_runs_stream(thread_id: str, request: Request):
                 "thread_id": thread_id
             }
             _record("end", end)
+            log.info(f"YIELDING end event - stream complete")
             yield f"event: end\ndata: {json.dumps(end, ensure_ascii=False)}\n\n"
+            log.info(f"SSE stream finished for thread {thread_id}")
 
         except Exception as e:
             _capture_error(thread_id, run_id, body, e)
@@ -597,6 +611,7 @@ async def agent_runs_stream(thread_id: str, request: Request):
                 "status": "error"
             }
             _record("error", err)
+            log.info(f"YIELDING error event")
             yield f"event: error\ndata: {json.dumps(err, ensure_ascii=False)}\n\n"
 
             end = {
@@ -605,6 +620,7 @@ async def agent_runs_stream(thread_id: str, request: Request):
                 "thread_id": thread_id
             }
             _record("end", end)
+            log.info(f"YIELDING end event - stream error")
             yield f"event: end\ndata: {json.dumps(end, ensure_ascii=False)}\n\n"
 
     # Use StreamingResponse with proper SSE headers
