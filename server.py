@@ -336,15 +336,35 @@ def assistants_search():
     return _assistant_catalog()
 
 
+@app.get("/agent/assistants/search")
+def assistants_search_agent():
+    """LangGraph SDK Standard: List available assistants (with /agent prefix)"""
+    return _assistant_catalog()
+
+
 @app.get("/info")
 def info():
     """LangGraph SDK Standard: Get agent info"""
     return _info_payload()
 
 
+@app.get("/agent/info")
+def info_agent():
+    """LangGraph SDK Standard: Get agent info (with /agent prefix)"""
+    return _info_payload()
+
+
 @app.post("/threads")
 def create_thread():
     """LangGraph SDK Standard: Create new thread"""
+    tid = str(uuid.uuid4())
+    THREADS[tid] = []
+    return {"thread_id": tid}
+
+
+@app.post("/agent/threads")
+def create_thread_agent():
+    """LangGraph SDK Standard: Create new thread (with /agent prefix)"""
     tid = str(uuid.uuid4())
     THREADS[tid] = []
     return {"thread_id": tid}
@@ -389,6 +409,12 @@ def threads_search():
     return [{"thread_id": t} for t in THREADS.keys()]
 
 
+@app.post("/agent/threads/search")
+def threads_search_agent():
+    """LangGraph SDK Standard: Search/list threads (with /agent prefix)"""
+    return [{"thread_id": t} for t in THREADS.keys()]
+
+
 # IMPORTANT: support BOTH GET and POST (different AgentChat builds use different methods)
 @app.get("/threads/{thread_id}/history")
 def thread_history_get(thread_id: str):
@@ -398,6 +424,16 @@ def thread_history_get(thread_id: str):
     result = _sanitize_history(history)
     msg_summary = [f"{m.get('role')}:{m.get('content')[:30]}" for m in result]
     log.info(f"GET /threads/{thread_id}/history returning {len(result)} messages: {msg_summary}")
+    return result
+
+
+@app.get("/agent/threads/{thread_id}/history")
+def thread_history_get_agent(thread_id: str):
+    """LangGraph SDK Standard: Get thread message history (with /agent prefix)"""
+    history = THREADS.get(thread_id, [])
+    result = _sanitize_history(history)
+    msg_summary = [f"{m.get('role')}:{m.get('content')[:30]}" for m in result]
+    log.info(f"GET /agent/threads/{thread_id}/history returning {len(result)} messages: {msg_summary}")
     return result
 
 
