@@ -466,15 +466,16 @@ async def runs_stream(thread_id: str, request: Request):
             yield f"event: values\ndata: {values_json}\n\n"
             await asyncio.sleep(0.1)
 
-            # 6. Brief delay before end event
+            # 6. Send values event AGAIN right before end to ensure SDK has final state
+            await asyncio.sleep(0.05)
+            log.info(f"YIELDING final values event before end")
+            yield f"event: values\ndata: {values_json}\n\n"
             await asyncio.sleep(0.05)
 
-            # 7. Send end event with success status and complete thread state INCLUDING messages
+            # 7. Send end event marking successful completion
             end = {
                 "run_id": run_id,
-                "status": "success",
-                "thread_id": thread_id,
-                "messages": full_history  # SDK needs final state with messages
+                "thread_id": thread_id
             }
             _record("end", end)
             yield f"event: end\ndata: {json.dumps(end, ensure_ascii=False)}\n\n"
@@ -629,22 +630,20 @@ async def agent_runs_stream(thread_id: str, request: Request):
             yield f"event: values\ndata: {values_json}\n\n"
             await asyncio.sleep(0.1)
 
-            # 6. Brief delay before end event
+            # 6. Send values event AGAIN right before end to ensure SDK has final state
+            await asyncio.sleep(0.05)
+            log.info(f"YIELDING final values event before end")
+            yield f"event: values\ndata: {values_json}\n\n"
             await asyncio.sleep(0.05)
 
-            # 7. Send end event with success status and complete thread state INCLUDING messages
+            # 7. Send end event marking successful completion
             end = {
                 "run_id": run_id,
-                "status": "success",
-                "thread_id": thread_id,
-                "messages": full_history  # SDK needs final state with messages
+                "thread_id": thread_id
             }
             _record("end", end)
-            log.info(f"YIELDING end event - stream complete with {len(full_history)} messages")
+            log.info(f"YIELDING end event - stream complete (state in values event)")
             yield f"event: end\ndata: {json.dumps(end, ensure_ascii=False)}\n\n"
-            
-            # Keep stream alive for a moment to ensure all events are received
-            await asyncio.sleep(0.2)
             
             # Keep stream alive for a moment to ensure all events are received
             await asyncio.sleep(0.2)
