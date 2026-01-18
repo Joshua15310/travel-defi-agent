@@ -350,6 +350,39 @@ def create_thread():
     return {"thread_id": tid}
 
 
+@app.post("/chat")
+async def simple_chat(request: Request):
+    """Simple chat endpoint for HTML frontend (non-streaming)"""
+    try:
+        body = await request.json()
+        message = body.get("message", "").strip()
+        thread_id = body.get("thread_id", str(uuid.uuid4()))
+        
+        if not message:
+            return JSONResponse({"error": "message is required"}, status_code=400)
+        
+        # Initialize thread if needed
+        if thread_id not in THREADS:
+            THREADS[thread_id] = []
+        
+        # Add user message
+        user_msg = _new_msg("user", message)
+        THREADS[thread_id].append(user_msg)
+        log.info(f"Chat: thread {thread_id} received message: {message[:50]}")
+        
+        # Get agent response
+        reply = _call_agent(thread_id)
+        ai_msg = _new_msg("assistant", reply)
+        THREADS[thread_id].append(ai_msg)
+        
+        log.info(f"Chat: thread {thread_id} agent replied: {reply[:50]}")
+        return {"reply": reply, "thread_id": thread_id}
+        
+    except Exception as e:
+        log.error(f"Chat error: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 @app.post("/threads/search")
 def threads_search():
     """LangGraph SDK Standard: Search/list threads"""
