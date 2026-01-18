@@ -449,6 +449,16 @@ def thread_history_post(thread_id: str):
     return result
 
 
+@app.post("/agent/threads/{thread_id}/history")
+def thread_history_post_agent(thread_id: str):
+    """LangGraph SDK Standard: Get thread message history (with /agent prefix)"""
+    history = THREADS.get(thread_id, [])
+    result = _sanitize_history(history)
+    msg_summary = [f"{m.get('role')}:{m.get('content')[:30]}" for m in result]
+    log.info(f"POST /agent/threads/{thread_id}/history returning {len(result)} messages: {msg_summary}")
+    return result
+
+
 @app.get("/debug/last_error")
 def debug_last_error():
     """Debug: Get last error"""
