@@ -31,6 +31,28 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 
+# Custom JSON encoder to handle LangChain message objects
+class MessageEncoder(json.JSONEncoder):
+    def default(self, obj):
+        # Handle LangChain message objects
+        if isinstance(obj, (AIMessage, HumanMessage, SystemMessage)):
+            return {
+                "type": "ai" if isinstance(obj, AIMessage) else ("human" if isinstance(obj, HumanMessage) else "system"),
+                "role": "assistant" if isinstance(obj, AIMessage) else ("user" if isinstance(obj, HumanMessage) else "system"),
+                "content": obj.content,
+                "id": getattr(obj, 'id', f"msg_{uuid.uuid4().hex}")
+            }
+        # Handle any other message-like objects
+        if hasattr(obj, 'content') and hasattr(obj, 'type'):
+            return {
+                "type": getattr(obj, 'type', 'human'),
+                "role": getattr(obj, 'role', 'user'),
+                "content": obj.content,
+                "id": getattr(obj, 'id', f"msg_{uuid.uuid4().hex}")
+            }
+        return super().default(obj)
+
+
 app = FastAPI()
 
 app.add_middleware(
@@ -500,11 +522,12 @@ async def runs_stream(thread_id: str, request: Request):
                 async for event in graph.astream(input_data, config=config, stream_mode="values"):
                     yield {
                         "event": "values",  # Vercel app listens for this event type
-                        "data": json.dumps(event, ensure_ascii=False)
+                        "data": json.dumps(event, cls=MessageEncoder, ensure_ascii=False)
                     }
                 yield {"event": "end"}
             except Exception as e:
                 log.error(f"Stream error: {e}")
+                log.error(f"Traceback: {traceback.format_exc()}")
                 yield {
                     "event": "error",
                     "data": json.dumps({"error": str(e)})
@@ -589,11 +612,12 @@ async def agent_runs_stream(thread_id: str, request: Request):
                 async for event in graph.astream(input_data, config=config, stream_mode="values"):
                     yield {
                         "event": "values",  # Vercel app listens for this event type
-                        "data": json.dumps(event, ensure_ascii=False)
+                        "data": json.dumps(event, cls=MessageEncoder, ensure_ascii=False)
                     }
                 yield {"event": "end"}
             except Exception as e:
                 log.error(f"Stream error: {e}")
+                log.error(f"Traceback: {traceback.format_exc()}")
                 yield {
                     "event": "error",
                     "data": json.dumps({"error": str(e)})
