@@ -452,7 +452,7 @@ async def runs_stream(thread_id: str, request: Request):
             # 4. Send messages-tuple event (SDK expects this for persistence)
             messages_tuple_payload = [full_history]
             log.info(f"YIELDING messages-tuple event with {len(full_history)} messages")
-            yield f"event: messages-tuple\ndata: {json.dumps([messages_tuple_payload], ensure_ascii=False)}\n\n"
+            yield f"event: messages-tuple\ndata: {json.dumps(messages_tuple_payload, ensure_ascii=False)}\n\n"
             await asyncio.sleep(0.05)
 
             # 5. Send values event with complete conversation state
@@ -614,7 +614,7 @@ async def agent_runs_stream(thread_id: str, request: Request):
             # 4. Send messages-tuple event (SDK expects this for persistence)
             messages_tuple_payload = [full_history]
             log.info(f"YIELDING messages-tuple event with {len(full_history)} messages")
-            yield f"event: messages-tuple\ndata: {json.dumps([messages_tuple_payload], ensure_ascii=False)}\n\n"
+            yield f"event: messages-tuple\ndata: {json.dumps(messages_tuple_payload, ensure_ascii=False)}\n\n"
             await asyncio.sleep(0.05)
 
             # 5. Send values event with complete conversation state
