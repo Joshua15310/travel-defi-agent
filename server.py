@@ -469,11 +469,12 @@ async def runs_stream(thread_id: str, request: Request):
             # 6. Brief delay before end event
             await asyncio.sleep(0.05)
 
-            # 7. Send end event with success status and complete thread state
+            # 7. Send end event with success status and complete thread state INCLUDING messages
             end = {
                 "run_id": run_id,
                 "status": "success",
-                "thread_id": thread_id
+                "thread_id": thread_id,
+                "messages": full_history  # SDK needs final state with messages
             }
             _record("end", end)
             yield f"event: end\ndata: {json.dumps(end, ensure_ascii=False)}\n\n"
@@ -629,14 +630,17 @@ async def agent_runs_stream(thread_id: str, request: Request):
             await asyncio.sleep(0.1)
 
             # 6. Brief delay before end event
-            await asyncio.sleep(0.5)  # Longer delay to ensure frontend processes all events
+            await asyncio.sleep(0.05)
+
+            # 7. Send end event with success status and complete thread state INCLUDING messages
             end = {
                 "run_id": run_id,
                 "status": "success",
-                "thread_id": thread_id
+                "thread_id": thread_id,
+                "messages": full_history  # SDK needs final state with messages
             }
             _record("end", end)
-            log.info(f"YIELDING end event - stream complete")
+            log.info(f"YIELDING end event - stream complete with {len(full_history)} messages")
             yield f"event: end\ndata: {json.dumps(end, ensure_ascii=False)}\n\n"
             
             # Keep stream alive for a moment to ensure all events are received
