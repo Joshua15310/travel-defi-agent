@@ -509,25 +509,21 @@ async def runs_stream(thread_id: str, request: Request):
             # 2. Call agent
             reply = _call_agent(thread_id)
             log.info(f"Agent reply: {reply[:100]}...")
-            ai_msg = _new_msg("assistant", reply)  # Use "assistant" instead of "ai"
+            ai_msg = _new_msg("assistant", reply)
             log.info(f"Created AI message: type={ai_msg.get('type')}, role={ai_msg.get('role')}, content={ai_msg.get('content')[:50]}...")
             THREADS[thread_id].append(ai_msg)
             log.info(f"Thread {thread_id} now has {len(THREADS[thread_id])} messages after agent response")
 
-            # 3. Get full conversation history
-            full_history = _sanitize_history(THREADS.get(thread_id, []))
-            log.info(f"Full thread history: {len(full_history)} messages")
+            # 3. Stream the message - send partial first with single message (not in array)
+            _record("messages/partial", ai_msg)
+            log.info(f"YIELDING messages/partial event with new AI message")
+            yield f"event: messages/partial\ndata: {json.dumps(ai_msg, ensure_ascii=False)}\n\n"
+            await asyncio.sleep(0.05)
 
-            # 4. Send values event with complete conversation state
-            # This is the PRIMARY state update that SDK reads
-            values_payload = {
-                "messages": full_history
-            }
-            _record("values", values_payload)
-            values_json = json.dumps(values_payload, ensure_ascii=False)
-            log.info(f"YIELDING values event with {len(full_history)} messages")
-            log.info(f"VALUES EVENT PAYLOAD: {values_json}")
-            yield f"event: values\ndata: {values_json}\n\n"
+            # 4. Then confirm with final messages event (as array with just the new message)
+            _record("messages", [ai_msg])
+            log.info(f"YIELDING messages event with new AI message")
+            yield f"event: messages\ndata: {json.dumps([ai_msg], ensure_ascii=False)}\n\n"
             await asyncio.sleep(0.1)
 
             # 5. Send end event marking successful completion
@@ -668,20 +664,16 @@ async def agent_runs_stream(thread_id: str, request: Request):
             THREADS[thread_id].append(ai_msg)
             log.info(f"Thread {thread_id} now has {len(THREADS[thread_id])} messages after agent response")
 
-            # 3. Get full conversation history
-            full_history = _sanitize_history(THREADS.get(thread_id, []))
-            log.info(f"Full thread history: {len(full_history)} messages")
+            # 3. Stream the message - send partial first with single message (not in array)
+            _record("messages/partial", ai_msg)
+            log.info(f"YIELDING messages/partial event with new AI message")
+            yield f"event: messages/partial\ndata: {json.dumps(ai_msg, ensure_ascii=False)}\n\n"
+            await asyncio.sleep(0.05)
 
-            # 4. Send values event with complete conversation state
-            # This is the PRIMARY state update that SDK reads
-            values_payload = {
-                "messages": full_history
-            }
-            _record("values", values_payload)
-            values_json = json.dumps(values_payload, ensure_ascii=False)
-            log.info(f"YIELDING values event with {len(full_history)} messages")
-            log.info(f"VALUES EVENT PAYLOAD: {values_json}")
-            yield f"event: values\ndata: {values_json}\n\n"
+            # 4. Then confirm with final messages event (as array with just the new message)
+            _record("messages", [ai_msg])
+            log.info(f"YIELDING messages event with new AI message")
+            yield f"event: messages\ndata: {json.dumps([ai_msg], ensure_ascii=False)}\n\n"
             await asyncio.sleep(0.1)
 
             # 5. Send end event marking successful completion
@@ -693,7 +685,7 @@ async def agent_runs_stream(thread_id: str, request: Request):
             log.info(f"YIELDING end event")
             yield f"event: end\ndata: {json.dumps(end, ensure_ascii=False)}\n\n"
             
-            # Keep stream alive briefly to ensure all events delivered
+            # Keep stream alive briefly
             await asyncio.sleep(0.2)
             log.info(f"SSE stream finished for thread {thread_id}")
 
