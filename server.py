@@ -15,6 +15,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.routing import APIRouter
+from httpx import AsyncClient
 
 import agent as agent_module
 from agent import AIMessage, HumanMessage, SystemMessage
@@ -448,7 +449,13 @@ async def runs_stream(thread_id: str, request: Request):
             full_history = _sanitize_history(THREADS.get(thread_id, []))
             log.info(f"Full thread history: {len(full_history)} messages")
 
-            # 4. Send values event with complete conversation state
+            # 4. Send messages-tuple event (SDK expects this for persistence)
+            messages_tuple_payload = [full_history]
+            log.info(f"YIELDING messages-tuple event with {len(full_history)} messages")
+            yield f"event: messages-tuple\ndata: {json.dumps([messages_tuple_payload], ensure_ascii=False)}\n\n"
+            await asyncio.sleep(0.05)
+
+            # 5. Send values event with complete conversation state
             values_payload = {
                 "messages": full_history
             }
@@ -459,7 +466,7 @@ async def runs_stream(thread_id: str, request: Request):
             yield f"event: values\ndata: {values_json}\n\n"
             await asyncio.sleep(0.1)
 
-            # 5. Brief delay before end event
+            # 6. Brief delay before end event
             await asyncio.sleep(0.05)
 
             # 7. Send end event with success status and complete thread state
@@ -604,7 +611,13 @@ async def agent_runs_stream(thread_id: str, request: Request):
             full_history = _sanitize_history(THREADS.get(thread_id, []))
             log.info(f"Full thread history: {len(full_history)} messages")
 
-            # 4. Send values event with complete conversation state
+            # 4. Send messages-tuple event (SDK expects this for persistence)
+            messages_tuple_payload = [full_history]
+            log.info(f"YIELDING messages-tuple event with {len(full_history)} messages")
+            yield f"event: messages-tuple\ndata: {json.dumps([messages_tuple_payload], ensure_ascii=False)}\n\n"
+            await asyncio.sleep(0.05)
+
+            # 5. Send values event with complete conversation state
             values_payload = {
                 "messages": full_history
             }
@@ -615,7 +628,7 @@ async def agent_runs_stream(thread_id: str, request: Request):
             yield f"event: values\ndata: {values_json}\n\n"
             await asyncio.sleep(0.1)
 
-            # 5. Brief delay before end event
+            # 6. Brief delay before end event
             await asyncio.sleep(0.5)  # Longer delay to ensure frontend processes all events
             end = {
                 "run_id": run_id,
