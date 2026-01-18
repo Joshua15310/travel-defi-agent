@@ -16,9 +16,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.routing import APIRouter
 from httpx import AsyncClient
+from sse_starlette.sse import EventSourceResponse
 
 import agent as agent_module
-from agent import AIMessage, HumanMessage, SystemMessage
+from agent import AIMessage, HumanMessage, SystemMessage, workflow_app as graph
 
 # Configure logging to stderr (always unbuffered)
 logging.basicConfig(
@@ -475,97 +476,36 @@ def debug_threads():
 
 @app.post("/threads/{thread_id}/runs/stream")
 async def runs_stream(thread_id: str, request: Request):
-    """LangGraph SDK Standard: Stream agent execution for a thread"""
-    body = await request.json()
-    incoming = _normalize_incoming_messages((body.get("input") or {}).get("messages", []))
+    """LangGraph SDK Standard: Stream agent execution - ORIGINAL WORKING PATTERN"""
+    try:
+        body = await request.json()
+        input_data = body.get("input", {})
+        config = {"configurable": {"thread_id": thread_id}}
+        
+        log.info(f"/threads/{thread_id}/runs/stream - Using graph.astream with stream_mode=values")
 
-    log.info(f"/threads/{thread_id}/runs/stream - Received {len(incoming)} incoming messages")
-    for msg in incoming:
-        log.info(f"  - {msg.get('type')}/{msg.get('role')}: {msg.get('content')[:50]}...")
+        async def event_generator():
+            try:
+                # CRITICAL: Use graph.astream with stream_mode="values" - THIS WAS WORKING!
+                async for event in graph.astream(input_data, config=config, stream_mode="values"):
+                    yield {
+                        "event": "values",  # Vercel app listens for this event type
+                        "data": json.dumps(event, ensure_ascii=False)
+                    }
+                yield {"event": "end"}
+            except Exception as e:
+                log.error(f"Stream error: {e}")
+                yield {
+                    "event": "error",
+                    "data": json.dumps({"error": str(e)})
+                }
+                yield {"event": "end"}
 
-    THREADS.setdefault(thread_id, [])
-    if incoming:
-        THREADS[thread_id].extend(incoming)
-
-    log.info(f"Thread {thread_id} now has {len(THREADS[thread_id])} messages before agent call")
-
-    run_id = str(uuid.uuid4())
-
-    async def gen():
-        LAST_STREAM.clear()
-        try:
-            # 1. Send metadata event (SSE format)
-            meta = {
-                "run_id": run_id,
-                "thread_id": thread_id,
-                "assistant_id": body.get("assistant_id"),
-                "status": "running",
-            }
-            _record("metadata", meta)
-            log.info(f"YIELDING metadata event to client")
-            yield f"event: metadata\ndata: {json.dumps(meta, ensure_ascii=False)}\n\n"
-            await asyncio.sleep(0.01)
-
-            # 2. Call agent
-            reply = _call_agent(thread_id)
-            log.info(f"Agent reply: {reply[:100]}...")
-            ai_msg = _new_msg("assistant", reply)
-            log.info(f"Created AI message: type={ai_msg.get('type')}, role={ai_msg.get('role')}, content={ai_msg.get('content')[:50]}...")
-            THREADS[thread_id].append(ai_msg)
-            log.info(f"Thread {thread_id} now has {len(THREADS[thread_id])} messages after agent response")
-
-            # 3. Stream the message - send partial first with single message (not in array)
-            _record("messages/partial", ai_msg)
-            log.info(f"YIELDING messages/partial event with new AI message")
-            yield f"event: messages/partial\ndata: {json.dumps(ai_msg, ensure_ascii=False)}\n\n"
-            await asyncio.sleep(0.05)
-
-            # 4. Then confirm with final messages event (as array with just the new message)
-            _record("messages", [ai_msg])
-            log.info(f"YIELDING messages event with new AI message")
-            yield f"event: messages\ndata: {json.dumps([ai_msg], ensure_ascii=False)}\n\n"
-            await asyncio.sleep(0.1)
-
-            # 5. Send end event marking successful completion
-            end = {
-                "run_id": run_id,
-                "thread_id": thread_id
-            }
-            _record("end", end)
-            log.info(f"YIELDING end event")
-            yield f"event: end\ndata: {json.dumps(end, ensure_ascii=False)}\n\n"
-
-        except Exception as e:
-            _capture_error(thread_id, run_id, body, e)
-            err = {
-                "run_id": run_id,
-                "error": LAST_ERROR.get("error", "unknown error"),
-                "status": "error"
-            }
-            _record("error", err)
-            yield f"event: error\ndata: {json.dumps(err, ensure_ascii=False)}\n\n"
-
-            end = {
-                "run_id": run_id,
-                "status": "error",
-                "thread_id": thread_id
-            }
-            _record("end", end)
-            yield f"event: end\ndata: {json.dumps(end, ensure_ascii=False)}\n\n"
-
-    # Use StreamingResponse with proper SSE headers
-    return StreamingResponse(
-        gen(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache, no-transform",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-            "Access-Control-Allow-Headers": "*",
-        },
-    )
+        return EventSourceResponse(event_generator())
+    
+    except Exception as e:
+        log.error(f"Endpoint error: {e}")
+        return {"error": str(e)}
 
 
 # =============================================================================
@@ -625,103 +565,36 @@ def agent_thread_history_post(thread_id: str):
 
 @agent.post("/threads/{thread_id}/runs/stream")
 async def agent_runs_stream(thread_id: str, request: Request):
-    """Vercel compatibility: Stream agent execution for a thread"""
-    body = await request.json()
-    incoming = _normalize_incoming_messages((body.get("input") or {}).get("messages", []))
+    """Vercel compatibility: Stream agent execution - ORIGINAL WORKING PATTERN"""
+    try:
+        body = await request.json()
+        input_data = body.get("input", {})
+        config = {"configurable": {"thread_id": thread_id}}
+        
+        log.info(f"/agent/threads/{thread_id}/runs/stream - Using graph.astream with stream_mode=values")
 
-    log.info(f"/agent/threads/{thread_id}/runs/stream - Received {len(incoming)} incoming messages")
-    for msg in incoming:
-        log.info(f"  - {msg.get('type')}/{msg.get('role')}: {msg.get('content')[:50]}...")
+        async def event_generator():
+            try:
+                # CRITICAL: Use graph.astream with stream_mode="values" - THIS WAS WORKING!
+                async for event in graph.astream(input_data, config=config, stream_mode="values"):
+                    yield {
+                        "event": "values",  # Vercel app listens for this event type
+                        "data": json.dumps(event, ensure_ascii=False)
+                    }
+                yield {"event": "end"}
+            except Exception as e:
+                log.error(f"Stream error: {e}")
+                yield {
+                    "event": "error",
+                    "data": json.dumps({"error": str(e)})
+                }
+                yield {"event": "end"}
 
-    THREADS.setdefault(thread_id, [])
-    if incoming:
-        THREADS[thread_id].extend(incoming)
-
-    log.info(f"Thread {thread_id} now has {len(THREADS[thread_id])} messages before agent call")
-
-    run_id = str(uuid.uuid4())
-
-    async def gen():
-        LAST_STREAM.clear()
-        try:
-            # 1. Send metadata event (SSE format)
-            meta = {
-                "run_id": run_id,
-                "thread_id": thread_id,
-                "assistant_id": body.get("assistant_id"),
-                "status": "running",
-            }
-            _record("metadata", meta)
-            log.info(f"YIELDING metadata event to client")
-            yield f"event: metadata\ndata: {json.dumps(meta, ensure_ascii=False)}\n\n"
-            await asyncio.sleep(0.01)
-
-            # 2. Call agent
-            reply = _call_agent(thread_id)
-            log.info(f"Agent reply: {reply[:100]}...")
-            ai_msg = _new_msg("assistant", reply)
-            log.info(f"Created AI message: type={ai_msg.get('type')}, role={ai_msg.get('role')}, content={ai_msg.get('content')[:50]}...")
-            THREADS[thread_id].append(ai_msg)
-            log.info(f"Thread {thread_id} now has {len(THREADS[thread_id])} messages after agent response")
-
-            # 3. Stream the message - send partial first with single message (not in array)
-            _record("messages/partial", ai_msg)
-            log.info(f"YIELDING messages/partial event with new AI message")
-            yield f"event: messages/partial\ndata: {json.dumps(ai_msg, ensure_ascii=False)}\n\n"
-            await asyncio.sleep(0.05)
-
-            # 4. Then confirm with final messages event (as array with just the new message)
-            _record("messages", [ai_msg])
-            log.info(f"YIELDING messages event with new AI message")
-            yield f"event: messages\ndata: {json.dumps([ai_msg], ensure_ascii=False)}\n\n"
-            await asyncio.sleep(0.1)
-
-            # 5. Send end event marking successful completion
-            end = {
-                "run_id": run_id,
-                "thread_id": thread_id
-            }
-            _record("end", end)
-            log.info(f"YIELDING end event")
-            yield f"event: end\ndata: {json.dumps(end, ensure_ascii=False)}\n\n"
-            
-            # Keep stream alive briefly
-            await asyncio.sleep(0.2)
-            log.info(f"SSE stream finished for thread {thread_id}")
-
-        except Exception as e:
-            _capture_error(thread_id, run_id, body, e)
-            err = {
-                "run_id": run_id,
-                "error": LAST_ERROR.get("error", "unknown error"),
-                "status": "error"
-            }
-            _record("error", err)
-            log.info(f"YIELDING error event")
-            yield f"event: error\ndata: {json.dumps(err, ensure_ascii=False)}\n\n"
-
-            end = {
-                "run_id": run_id,
-                "status": "error",
-                "thread_id": thread_id
-            }
-            _record("end", end)
-            log.info(f"YIELDING end event - stream error")
-            yield f"event: end\ndata: {json.dumps(end, ensure_ascii=False)}\n\n"
-
-    # Use StreamingResponse with proper SSE headers
-    return StreamingResponse(
-        gen(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache, no-transform",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-            "Access-Control-Allow-Headers": "*",
-        },
-    )
+        return EventSourceResponse(event_generator())
+    
+    except Exception as e:
+        log.error(f"Endpoint error: {e}")
+        return {"error": str(e)}
 
 
 # Debug endpoints for agent router (so they're accessible at /agent/debug/*)
