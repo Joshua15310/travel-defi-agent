@@ -512,15 +512,23 @@ Extract:
 - currency: USD, GBP, EUR, etc.
 - cabin_class: economy (default), business, or first
 
-Date parsing rules (CRITICAL - Today is {datetime.now().strftime("%Y-%m-%d")}):
-- "tomorrow" → {(datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")}
-- "next Friday" → Find the NEXT Friday after today, return in YYYY-MM-DD
-- "next Monday" → Find the NEXT Monday after today, return in YYYY-MM-DD  
-- "next week" → Exactly 7 days from today: {(datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d")}
-- "in 3 days" → {(datetime.now() + timedelta(days=3)).strftime("%Y-%m-%d")}
+Date parsing rules (CRITICAL - Calculate carefully!):
+Today is {datetime.now().strftime("%A, %B %d, %Y")} ({datetime.now().strftime("%Y-%m-%d")})
+
+Examples:
+- "tomorrow" → Add 1 day: {(datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")}
+- "in 3 days" → Add 3 days: {(datetime.now() + timedelta(days=3)).strftime("%Y-%m-%d")}
+- "next week" → Add 7 days: {(datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d")}
+- "next Friday" → Find NEXT Friday (not this Friday if today is Friday). Calculate days until Friday comes again.
+  * Today is {datetime.now().strftime("%A")}, so next Friday is {((datetime.now() + timedelta(days=(4 - datetime.now().weekday() + 7) % 7 if datetime.now().weekday() != 4 else 7)).strftime("%Y-%m-%d"))}
+- "next Monday" → Find NEXT Monday. Calculate days until Monday comes again.
+  * Next Monday: {((datetime.now() + timedelta(days=(0 - datetime.now().weekday() + 7) % 7 if datetime.now().weekday() != 0 else 7)).strftime("%Y-%m-%d"))}
+
+IMPORTANT:
 - Always return dates in YYYY-MM-DD format
-- NEVER return past dates
-- For check-out: must be AFTER check-in date
+- NEVER return dates in the past (before {datetime.now().strftime("%Y-%m-%d")})
+- For check-out: MUST be AFTER check-in date
+- Count carefully - "next Friday" means the Friday that comes next, not today even if today is Friday
 
 Examples:
 - "Fly from London to Paris tomorrow" → trip_type=flight_only, origin=London, destination=Paris
@@ -593,7 +601,7 @@ Examples:
             if 0 <= idx < len(state["hotels"]):
                 return {"selected_hotel": state["hotels"][idx]}
 
-    # AUTO-DATES
+    # AUTO-DATES - ONLY for return_date on round trips, NEVER auto-set check_in/check_out
     if intent_data.get("departure_date") and not intent_data.get("return_date") and state.get("trip_type") == "complete_trip":
         try:
             dep = datetime.strptime(intent_data["departure_date"], "%Y-%m-%d")
@@ -601,11 +609,8 @@ Examples:
         except:
             pass
 
-    if intent_data.get("departure_date") and not intent_data.get("check_in"):
-        intent_data["check_in"] = intent_data["departure_date"]
-    
-    if intent_data.get("return_date") and not intent_data.get("check_out"):
-        intent_data["check_out"] = intent_data["return_date"]
+    # DO NOT auto-set check_in or check_out - user must specify for hotels
+    # This ensures proper conversation flow and no surprise 7-night bookings
 
     return intent_data
 
