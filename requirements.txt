@@ -11,4 +11,5 @@ langserve[all]
 sib_api_v3_sdk
 web3==6.15.0
 eth-account==0.10.0
-uvicorn
+sse-starlette
+httpx
