@@ -512,11 +512,15 @@ Extract:
 - currency: USD, GBP, EUR, etc.
 - cabin_class: economy (default), business, or first
 
-Date parsing rules:
-- "tomorrow" → tomorrow's date in YYYY-MM-DD
-- "next Friday", "next Monday" → date of next occurrence of that weekday in YYYY-MM-DD
-- "next week" → 7 days from today in YYYY-MM-DD
+Date parsing rules (CRITICAL - Today is {datetime.now().strftime("%Y-%m-%d")}):
+- "tomorrow" → {(datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")}
+- "next Friday" → Find the NEXT Friday after today, return in YYYY-MM-DD
+- "next Monday" → Find the NEXT Monday after today, return in YYYY-MM-DD  
+- "next week" → Exactly 7 days from today: {(datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d")}
+- "in 3 days" → {(datetime.now() + timedelta(days=3)).strftime("%Y-%m-%d")}
 - Always return dates in YYYY-MM-DD format
+- NEVER return past dates
+- For check-out: must be AFTER check-in date
 
 Examples:
 - "Fly from London to Paris tomorrow" → trip_type=flight_only, origin=London, destination=Paris
@@ -628,6 +632,8 @@ def gather_requirements(state: AgentState):
     if trip_type in ["hotel_only", "complete_trip"]:
         if not state.get("check_in"): 
             missing.append("Check-in Date")
+        if not state.get("check_out"):
+            missing.append("Check-out Date")
     
     # Common requirements
     if not state.get("destination"): 
@@ -643,7 +649,6 @@ def gather_requirements(state: AgentState):
                 "requirements_complete": True,
                 "currency": "USD",
                 "currency_symbol": "$",
-                "cabin_class": state.get("cabin_class", "economy"),
                 "rooms": state.get("guests", 2)
             }
         return {"requirements_complete": True}
@@ -698,6 +703,8 @@ If asking for budget, mention currency options (e.g. "400 pounds", "300 euros").
             msg = f"📅 When would you like to depart? (e.g. 2026-02-15, tomorrow, next Friday)"
         elif "Check-in Date" in missing:
             msg = f"📅 When would you like to check in? (e.g. 2026-02-15)"
+        elif "Check-out Date" in missing:
+            msg = f"📅 When would you like to check out? (e.g. 2026-02-20)"
         elif "Number of Travelers" in missing:
             msg = f"👥 How many travelers? (e.g. 1, 2, 4)"
         else:
@@ -1085,11 +1092,13 @@ _(Rate updated {time.strftime('%H:%M UTC')})_"""
     
     if state.get("selected_flight"):
         f = state["selected_flight"]
+        cabin_display = f.get('cabin', 'ECONOMY').replace('_', ' ').title()
         summary_parts.append(f"""✈️ **Flight**
 • {f['airline']} {f['flight_number']}
 • {state['origin']} → {state['destination']}
 • {state['departure_date']} at {f['departure_time']}
 • Duration: {f['duration']} | {f['stops']}
+• Cabin: {cabin_display}
 • Cost: {sym}{flight_total_local:.2f} {currency}
 """)
     
