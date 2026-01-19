@@ -1226,7 +1226,8 @@ def consultant_node(state: AgentState):
     
     context = ""
     if state.get("flights"):
-        context = f"User viewing flights: {[f\"{f['airline']} {f['flight_number']}\" for f in state['flights'][:5]]}"
+        flight_list = [f"{f['airline']} {f['flight_number']}" for f in state['flights'][:5]]
+        context = f"User viewing flights: {flight_list}"
     elif state.get("hotels"):
         context = f"User viewing hotels: {[h['name'] for h in state['hotels'][:5]]}"
     
