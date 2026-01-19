@@ -63,5 +63,8 @@ RUN uv pip uninstall --system pip setuptools wheel && rm /usr/bin/uv /usr/bin/uv
 
 WORKDIR /deps/outer-travel-defi-agent/src
 
+# Set default port (can be overridden by Render's PORT env var)
+ENV PORT=8000
+
 # Start the LangGraph API server
-CMD ["uvicorn", "langgraph_api.server:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD uvicorn langgraph_api.server:app --host 0.0.0.0 --port $PORT
