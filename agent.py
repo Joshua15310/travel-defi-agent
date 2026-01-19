@@ -1523,11 +1523,11 @@ workflow.add_conditional_edges(
     }
 )
 
-workflow.add_edge("search_flights", END)
-workflow.add_edge("search_hotels", END)
-workflow.add_edge("select_room", END)
+workflow.add_edge("search_flights", "parse")  # Loop back for cabin selection or flight choice
+workflow.add_edge("search_hotels", "parse")  # Loop back for hotel selection
+workflow.add_edge("select_room", "parse")  # Loop back for room confirmation
 workflow.add_edge("book", END)
-workflow.add_edge("consultant", END)
+workflow.add_edge("consultant", "parse")  # Loop back after consultation
 
 memory = MemorySaver()
 workflow_app = workflow.compile(checkpointer=memory)
