@@ -9,7 +9,9 @@
     "requests",
     "python-dotenv",
     "web3==6.15.0",
-    "eth-account==0.10.0"
+    "eth-account==0.10.0",
+    "sse-starlette",
+    "httpx"
   ],
   "graphs": {
     "agent": "./agent.py:workflow_app"
