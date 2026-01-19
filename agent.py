@@ -85,6 +85,7 @@ class AgentState(TypedDict, total=False):
     flights: List[dict]
     flight_cursor: int
     selected_flight: dict
+    cabin_options: dict  # Available cabin classes with sample flights
     
     # Hotel Details (reuse from before)
     check_in: str
@@ -554,7 +555,23 @@ Examples:
             symbols = {"USD": "$", "GBP": "£", "EUR": "€", "NGN": "₦", "CAD": "C$", "AUD": "A$", "JPY": "¥"}
             intent_data["currency_symbol"] = symbols.get(curr, "$")
         if intent.cabin_class:
-            intent_data["cabin_class"] = intent.cabin_class.lower()
+            cabin_input = intent.cabin_class.lower().replace(" ", "_")
+            # Map common variations
+            cabin_map = {
+                "economy": "economy",
+                "eco": "economy",
+                "premium": "premium_economy",
+                "premium_economy": "premium_economy",
+                "business": "business",
+                "biz": "business",
+                "first": "first",
+                "first_class": "first",
+                "1": "economy",
+                "2": "premium_economy", 
+                "3": "business",
+                "4": "first"
+            }
+            intent_data["cabin_class"] = cabin_map.get(cabin_input, cabin_input)
     except Exception as e:
         print(f"[INTENT ERROR] {e}")
 
@@ -619,11 +636,6 @@ def gather_requirements(state: AgentState):
         missing.append("Number of Travelers")
     if state.get("budget_max") is None: 
         missing.append("Budget")
-    
-    # Ask for cabin class for flights
-    if trip_type in ["flight_only", "complete_trip"]:
-        if not state.get("cabin_class"):
-            missing.append("Cabin Class")
 
     if not missing:
         if not state.get("currency"):
@@ -688,8 +700,6 @@ If asking for budget, mention currency options (e.g. "400 pounds", "300 euros").
             msg = f"📅 When would you like to check in? (e.g. 2026-02-15)"
         elif "Number of Travelers" in missing:
             msg = f"👥 How many travelers? (e.g. 1, 2, 4)"
-        elif "Cabin Class" in missing:
-            msg = f"✈️ Which cabin class would you prefer?\n\n1️⃣ Economy\n2️⃣ Business\n3️⃣ First Class\n\nJust reply with the class name or number!"
         else:
             msg = f"💰 What's your total budget for this trip? (e.g. '500 dollars', '400 pounds', '1000 euros')"
         
@@ -712,12 +722,58 @@ def search_flights(state: AgentState):
     departure_date = state.get("departure_date")
     return_date = state.get("return_date")
     guests = state.get("guests", 1)
-    cabin = state.get("cabin_class", "economy").upper()
     currency = state.get("currency", "USD")
     symbol = state.get("currency_symbol", "$")
+    
+    # If user hasn't selected cabin class yet, search all classes and show options
+    if not state.get("cabin_class"):
+        print(f"[FLIGHT SEARCH] Searching all cabin classes for {origin} -> {destination}")
+        
+        cabin_classes = ["ECONOMY", "PREMIUM_ECONOMY", "BUSINESS", "FIRST"]
+        cabin_results = {}
+        
+        for cabin in cabin_classes:
+            flights = search_flights_amadeus(
+                origin, destination, departure_date,
+                return_date, guests, cabin
+            )
+            if flights:
+                cabin_results[cabin] = flights[0]  # Get cheapest option per class
+        
+        if not cabin_results:
+            return {
+                "messages": [AIMessage(content=f"😔 No flights found from **{origin}** to **{destination}** on {departure_date}. Try different dates?")]
+            }
+        
+        # Convert prices to local currency
+        rate = get_live_rate(currency)
+        
+        # Build cabin class selection message
+        msg_parts = [f"✈️ **Available Cabin Classes** for {origin} → {destination}:\n"]
+        
+        cabin_display = {
+            "ECONOMY": "🪑 Economy",
+            "PREMIUM_ECONOMY": "✨ Premium Economy", 
+            "BUSINESS": "💼 Business",
+            "FIRST": "👑 First Class"
+        }
+        
+        for cabin, flight in cabin_results.items():
+            price_local = round(flight["price"] / rate, 2)
+            msg_parts.append(f"\n{cabin_display.get(cabin, cabin)}: **{symbol}{price_local:,.2f}**")
+        
+        msg_parts.append("\n\n💡 **Reply with your preferred cabin class** (e.g., 'economy', 'business', 'first class')")
+        
+        return {
+            "messages": [AIMessage(content="".join(msg_parts))],
+            "cabin_options": cabin_results
+        }
+    
+    # User has selected cabin class, search that specific class
+    cabin = state.get("cabin_class", "economy").upper()
     cursor = state.get("flight_cursor", 0)
     
-    print(f"[FLIGHT SEARCH] {origin} -> {destination} on {departure_date}")
+    print(f"[FLIGHT SEARCH] {origin} -> {destination} on {departure_date} ({cabin})")
     
     flights = search_flights_amadeus(
         origin, destination, departure_date,
@@ -726,7 +782,7 @@ def search_flights(state: AgentState):
     
     if not flights:
         return {
-            "messages": [AIMessage(content=f"😔 No flights found from **{origin}** to **{destination}** on {departure_date}. Try different dates?")]
+            "messages": [AIMessage(content=f"😔 No flights found for {cabin.lower().replace('_', ' ')} class. Try a different cabin class?")]
         }
     
     # Convert to local currency
