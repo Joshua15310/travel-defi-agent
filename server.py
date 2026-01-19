@@ -353,15 +353,21 @@ def status():
     return {"status": "ok"}
 
 
+@app.get("/assistants")
+def assistants_list():
+    """LangGraph SDK Standard: List available assistants"""
+    return _assistant_catalog()
+
+
 @app.get("/assistants/search")
 def assistants_search():
-    """LangGraph SDK Standard: List available assistants"""
+    """Legacy compatibility: List available assistants"""
     return _assistant_catalog()
 
 
 @app.get("/agent/assistants/search")
 def assistants_search_agent():
-    """LangGraph SDK Standard: List available assistants (with /agent prefix)"""
+    """Legacy compatibility: List available assistants (with /agent prefix)"""
     return _assistant_catalog()
 
 
@@ -550,9 +556,15 @@ async def runs_stream(thread_id: str, request: Request):
 agent = APIRouter(prefix="/agent")
 
 
+@agent.get("/assistants")
+def agent_assistants_list():
+    """LangGraph SDK Standard: List available assistants"""
+    return _assistant_catalog()
+
+
 @agent.get("/assistants/search")
 def agent_assistants_search():
-    """Vercel compatibility: List available assistants"""
+    """Legacy compatibility: List available assistants"""
     return _assistant_catalog()
 
 
