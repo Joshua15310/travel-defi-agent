@@ -752,10 +752,12 @@ def search_flights(state: AgentState):
                 "messages": [AIMessage(content=f"😔 No flights found from **{origin}** to **{destination}** on {departure_date}. Try different dates?")]
             }
         
-        # Convert prices to local currency
+        # Convert prices from USD to local currency
+        # Amadeus returns USD prices, so if user wants GBP: price_gbp = price_usd / rate_gbp_to_usd
+        # If user wants USD/USDC, rate = 1.0 so no conversion needed
         rate = get_live_rate(currency)
         
-        # Build cabin class selection message
+        # Build cabin class selection message with price comparison
         msg_parts = [f"✈️ **Available Cabin Classes** for {origin} → {destination}:\n"]
         
         cabin_display = {
@@ -765,9 +767,22 @@ def search_flights(state: AgentState):
             "FIRST": "👑 First Class"
         }
         
+        # Store prices for comparison
+        cabin_prices_local = {}
         for cabin, flight in cabin_results.items():
-            price_local = round(flight["price"] / rate, 2)
+            # Flight prices from Amadeus are in USD
+            price_usd = flight["price"]
+            # Convert USD to local currency: if GBP, 1 GBP = 1.27 USD, so 100 USD = 100/1.27 = 78.74 GBP
+            price_local = round(price_usd / rate, 2) if rate != 1.0 else price_usd
+            cabin_prices_local[cabin] = price_local
             msg_parts.append(f"\n{cabin_display.get(cabin, cabin)}: **{symbol}{price_local:,.2f}**")
+        
+        # Add savings context
+        if "ECONOMY" in cabin_prices_local and "BUSINESS" in cabin_prices_local:
+            economy_price = cabin_prices_local["ECONOMY"]
+            business_price = cabin_prices_local["BUSINESS"]
+            savings = round((1 - economy_price / business_price) * 100) if business_price > 0 else 0
+            msg_parts.append(f"\n\n💰 Save {savings}% by choosing Economy over Business")
         
         msg_parts.append("\n\n💡 **Reply with your preferred cabin class** (e.g., 'economy', 'business', 'first class')")
         
@@ -792,10 +807,12 @@ def search_flights(state: AgentState):
             "messages": [AIMessage(content=f"😔 No flights found for {cabin.lower().replace('_', ' ')} class. Try a different cabin class?")]
         }
     
-    # Convert to local currency
+    # Convert USD prices to local currency
+    # Amadeus returns USD, so for GBP: if 1 GBP = 1.27 USD, then 100 USD = 100/1.27 GBP
     rate = get_live_rate(currency)
     for flight in flights:
-        flight["price_local"] = round(flight["price"] / rate, 2)
+        price_usd = flight["price"]
+        flight["price_local"] = round(price_usd / rate, 2) if rate != 1.0 else price_usd
     
     # Filter by budget if set
     budget = state.get("budget_max")
@@ -816,14 +833,23 @@ def search_flights(state: AgentState):
             "messages": [AIMessage(content="That's all the flights! Say **'start over'** to search again.")]
         }
     
-    # Format message
+    # Format message with budget awareness
     trip_mode = "Round trip" if return_date else "One way"
     options = "\n\n".join([
         f"**{i+1}. {f['airline']} {f['flight_number']}** ✈️ {symbol}{f['price_local']}\n   🕐 {f['departure_time']} - {f['arrival_time']} | ⏱️ {f['duration']} | {f['stops']}"
         for i, f in enumerate(batch)
     ])
     
-    msg = f"✈️ **Flights from {origin} to {destination}** ({trip_mode})\n📅 {departure_date}{' - ' + return_date if return_date else ''}\n\n{options}\n\n📝 Reply with the **number** to select (e.g. '1'), or say **'next'** for more."
+    budget_msg = ""
+    if budget:
+        cheapest = min(batch, key=lambda x: x['price_local'])
+        remaining = budget - cheapest['price_local']
+        if remaining > 0:
+            budget_msg = f"\n\n💰 **Budget Status:** {symbol}{remaining:.2f} remaining for hotel (after cheapest flight)"
+        else:
+            budget_msg = f"\n\n⚠️ **Budget Alert:** Even the cheapest flight uses your full budget. Consider increasing budget for hotel costs."
+    
+    msg = f"✈️ **Flights from {origin} to {destination}** ({trip_mode})\n📅 {departure_date}{' - ' + return_date if return_date else ''}\n\n{options}{budget_msg}\n\n📝 Reply with the **number** to select (e.g. '1'), or say **'next'** for more."
     
     return {
         "flights": batch,
@@ -1002,22 +1028,54 @@ def select_room(state: AgentState):
     if state.get("selected_hotel") and not state.get("room_options"):
         hotel = state["selected_hotel"]
         sym = state.get("currency_symbol", "$")
+        currency = state.get("currency", "USD")
+        
+        # Calculate nights for budget projection
+        try:
+            d1 = datetime.strptime(state["check_in"], "%Y-%m-%d")
+            d2 = datetime.strptime(state["check_out"], "%Y-%m-%d")
+            nights = max(1, (d2 - d1).days)
+        except:
+            nights = 2
         
         room_options = [
             {"type": "Standard Room", "price": hotel["price"]},
             {"type": "Deluxe Suite", "price": round(hotel["price"] * 1.4, 2)}
         ]
         
+        # Calculate total costs for each option (including platform fee)
+        standard_total = round(room_options[0]['price'] * nights * 1.02, 2)
+        deluxe_total = round(room_options[1]['price'] * nights * 1.02, 2)
+        
+        # Add flight cost if applicable
+        if state.get("selected_flight"):
+            flight_cost = state["selected_flight"]["price_local"]
+            standard_total += round(flight_cost * 1.02, 2)
+            deluxe_total += round(flight_cost * 1.02, 2)
+        
+        # Budget check
+        budget = state.get("budget_max")
+        budget_msg = ""
+        if budget:
+            if standard_total > budget:
+                budget_msg = f"\n\n⚠️ **Budget Alert:** Standard room total ({sym}{standard_total:.2f}) exceeds your budget of {sym}{budget}. Consider reducing nights or finding a cheaper hotel."
+            elif deluxe_total > budget:
+                budget_msg = f"\n\n💡 **Budget Note:** Only Standard room fits your budget of {sym}{budget}. Deluxe would be {sym}{deluxe_total:.2f}."
+            else:
+                budget_msg = f"\n\n✅ **Within Budget:** Both options fit your {sym}{budget} budget!"
+        
         rooms_msg = f"""🏨 **{hotel['name']}** - Great choice!
 
 Please select a room type:
 
 **1. Standard Room**
-   💵 {sym}{room_options[0]['price']}/night
+   💵 {sym}{room_options[0]['price']}/night × {nights} nights = {sym}{room_options[0]['price'] * nights:.2f}
+   📊 Total with platform fee: ~{sym}{standard_total:.2f} {currency}
    
-**2. Deluxe Suite**
-   💵 {sym}{room_options[1]['price']}/night
-   ✨ Upgraded amenities
+**2. Deluxe Suite** ⭐
+   💵 {sym}{room_options[1]['price']}/night × {nights} nights = {sym}{room_options[1]['price'] * nights:.2f}
+   📊 Total with platform fee: ~{sym}{deluxe_total:.2f} {currency}
+   ✨ Upgraded amenities, better views{budget_msg}
 
 Reply with **'1'** or **'2'**"""
         
@@ -1113,20 +1171,35 @@ _(Rate updated {time.strftime('%H:%M UTC')})_"""
 ---
 
 💰 **Pricing Breakdown:**
-• Subtotal: {sym}{subtotal_local:.2f} {currency}
-• Platform Fee (2%): {sym}{platform_fee_local:.2f} {currency}
-• **Total Cost:** {sym}{grand_total_local:.2f} {currency}
+```
+Subtotal (Travel Costs)    {sym}{subtotal_local:.2f} {currency}
+Platform Fee (2%)          {sym}{platform_fee_local:.2f} {currency}
+                          ─────────────────
+Total Cost                 {sym}{grand_total_local:.2f} {currency}
+```
 
 {rate_info}
 
-💳 **Total Payment: {grand_total_usd:.2f} USDC** on Base Network
+💳 **PAYMENT DUE: {grand_total_usd:.2f} USDC**
+🔗 Network: **Base Network** (Fast & Low Fees)
+⛽ Estimated Gas: ~$0.01 USD (covered by platform)
 
-_Platform fee helps cover blockchain gas fees and keeps Warden Travel running! 🚀_
+📋 **What's Included in Platform Fee:**
+  ✓ Blockchain transaction gas fees
+  ✓ Smart contract security & auditing
+  ✓ 24/7 booking support
+  ✓ Payment processing & escrow
+
+💡 **Why USDC on Base?**
+  • Instant confirmation (no bank delays)
+  • Transparent on-chain proof
+  • Lower fees than credit cards (~3%)
+  • Full control of your funds
 
 ---
 
-✅ Reply **'yes'** or **'confirm'** to complete booking
-🔄 Say **'change'** or **'start over'** to modify""")
+✅ Reply **'yes'** or **'confirm'** to complete booking and pay {grand_total_usd:.2f} USDC
+🔄 Say **'change'** or **'start over'** to modify your booking""")
     
     summary_msg = "\n".join(summary_parts)
     
@@ -1250,14 +1323,44 @@ def book_trip(state: AgentState):
 💳 Deposit may be required
 """)
         
+        # Calculate components for detailed breakdown
+        if state.get("final_hotel_price") and state.get("final_flight_price"):
+            hotel_local = state.get("final_hotel_price", 0)
+            flight_local = state.get("final_flight_price", 0)
+            subtotal_usd = round((hotel_local + flight_local) * get_live_rate(currency), 2)
+            platform_fee_usd = round(total_usd - subtotal_usd, 2)
+        else:
+            subtotal_usd = round(total_usd / 1.02, 2)
+            platform_fee_usd = round(total_usd - subtotal_usd, 2)
+        
         confirmation_parts.append(f"""---
-💳 **PAYMENT SUMMARY**
+💳 **PAYMENT CONFIRMATION**
 
-Total Paid: **{total_usd:.2f} USDC** (Base Network)
-Equivalent: {sym}{total_local:.2f} {currency}
+✅ **Transaction Successful on Base Network**
 
-🔗 **Blockchain Proof:**
+```
+ITEMIZED BREAKDOWN
+─────────────────────────────────────
+Travel Services          {subtotal_usd:.2f} USDC
+Platform Fee (2%)        {platform_fee_usd:.2f} USDC
+                        ─────────────
+Total Paid               {total_usd:.2f} USDC
+
+Local Currency Equiv.    {sym}{total_local:.2f} {currency}
+```
+
+🔗 **Blockchain Receipt:**
 [View Transaction on BaseScan](https://sepolia.basescan.org/tx/{tx_hash})
+
+⚡ **Transaction Details:**
+• Network: Base (Layer 2 Ethereum)
+• Token: USDC (USD Coin)
+• Gas Fee: ~$0.01 (included in platform fee)
+• Confirmation: Instant
+• Status: ✅ Confirmed & Immutable
+
+📱 **Save Your Receipt:**
+Screenshot this confirmation or save the transaction hash: `{tx_hash[:16]}...`
 
 ---
 
