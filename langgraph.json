@@ -1,4 +1,16 @@
 {
+  "python_version": "3.11",
+  "dependencies": [
+    ".",
+    "langgraph",
+    "langchain",
+    "langchain-openai",
+    "langchain-core",
+    "requests",
+    "python-dotenv",
+    "web3==6.15.0",
+    "eth-account==0.10.0"
+  ],
   "graphs": {
     "agent": "./agent.py:workflow_app"
   },
