@@ -467,8 +467,10 @@ def parse_intent(state: AgentState):
                     return {"info_request": f"Tell me about {hotel['name']}"}
         return {"info_request": last_msg}
 
-    # PAGINATION
-    if any(w in last_msg for w in ["more", "next", "other", "show more"]):
+    # PAGINATION - Only trigger on explicit pagination requests
+    # Avoid false positives like "5 nights after checking" → "after" being mistaken for navigation
+    pagination_keywords = ["show more", "see more", "more options", "more flights", "more hotels", "other options"]
+    if any(keyword in last_msg for keyword in pagination_keywords) or (last_msg.strip() in ["more", "next"]):
         if state.get("flights") and not state.get("selected_flight"):
             return {
                 "flight_cursor": state.get("flight_cursor", 0) + 5,
