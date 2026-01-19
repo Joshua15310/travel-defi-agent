@@ -506,14 +506,21 @@ Extract:
 - destination: Arrival city
 - departure_date/return_date: Flight dates
 - check_in/check_out: Hotel dates
-- guests: Number of travelers
+- guests: Number of travelers (extract from "2 adults", "3 people", "1 adult and 2 children" etc - count total number)
 - budget_max: Total budget
 - currency: USD, GBP, EUR, etc.
 - cabin_class: economy (default), business, or first
 
+Date parsing rules:
+- "tomorrow" → tomorrow's date in YYYY-MM-DD
+- "next Friday", "next Monday" → date of next occurrence of that weekday in YYYY-MM-DD
+- "next week" → 7 days from today in YYYY-MM-DD
+- Always return dates in YYYY-MM-DD format
+
 Examples:
 - "Fly from London to Paris tomorrow" → trip_type=flight_only, origin=London, destination=Paris
 - "Book hotel in Tokyo" → trip_type=hotel_only, destination=Tokyo
+- "2 adults flying to Paris" → guests=2
 - "Plan trip from NYC to Dubai next week" → trip_type=complete_trip, origin=NYC, destination=Dubai"""
     
     intent_data = {}
@@ -612,6 +619,11 @@ def gather_requirements(state: AgentState):
         missing.append("Number of Travelers")
     if state.get("budget_max") is None: 
         missing.append("Budget")
+    
+    # Ask for cabin class for flights
+    if trip_type in ["flight_only", "complete_trip"]:
+        if not state.get("cabin_class"):
+            missing.append("Cabin Class")
 
     if not missing:
         if not state.get("currency"):
@@ -676,6 +688,8 @@ If asking for budget, mention currency options (e.g. "400 pounds", "300 euros").
             msg = f"📅 When would you like to check in? (e.g. 2026-02-15)"
         elif "Number of Travelers" in missing:
             msg = f"👥 How many travelers? (e.g. 1, 2, 4)"
+        elif "Cabin Class" in missing:
+            msg = f"✈️ Which cabin class would you prefer?\n\n1️⃣ Economy\n2️⃣ Business\n3️⃣ First Class\n\nJust reply with the class name or number!"
         else:
             msg = f"💰 What's your total budget for this trip? (e.g. '500 dollars', '400 pounds', '1000 euros')"
         
