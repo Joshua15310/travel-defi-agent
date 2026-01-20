@@ -21,6 +21,15 @@ from langgraph.checkpoint.memory import MemorySaver
 
 import warden_client
 
+# Email confirmation imports
+try:
+    import sib_api_v3_sdk
+    from sib_api_v3_sdk.rest import ApiException as BrevoApiException
+    BREVO_AVAILABLE = True
+except ImportError:
+    BREVO_AVAILABLE = False
+    print("[WARNING] Brevo/Sendinblue SDK not available. Email confirmations disabled.")
+
 load_dotenv()
 
 # --- CONFIGURATION ---
@@ -28,6 +37,9 @@ BOOKING_KEY = os.getenv("BOOKING_API_KEY")
 AMADEUS_API_KEY = os.getenv("AMADEUS_API_KEY")
 AMADEUS_API_SECRET = os.getenv("AMADEUS_API_SECRET")
 ONEINCH_API_KEY = os.getenv("ONEINCH_API_KEY")  # For token swaps
+BREVO_API_KEY = os.getenv("BREVO_API_KEY")  # For email confirmations
+BREVO_SENDER_EMAIL = os.getenv("BREVO_SENDER_EMAIL", "bookings@wardentravelagent.com")
+BREVO_SENDER_NAME = os.getenv("BREVO_SENDER_NAME", "Warden Travel Agent")
 
 # Production Mode Flag
 PRODUCTION_MODE = os.getenv("PRODUCTION_MODE", "false").lower() == "true"
@@ -110,6 +122,9 @@ class AgentState(TypedDict, total=False):
     waiting_for_booking_confirmation: bool
     final_status: str
     
+    # User Contact
+    user_email: str
+    
     # Misc
     info_request: str
 
@@ -126,6 +141,7 @@ class TravelIntent(BaseModel):
     budget_max: Optional[float] = Field(None, description="Total budget for trip")
     currency: Optional[str] = Field(None, description="Currency code")
     cabin_class: Optional[str] = Field(None, description="economy, business, or first")
+    user_email: Optional[str] = Field(None, description="User's email address for booking confirmation")
 
 # --- 3. Helper Functions ---
 def get_llm():
@@ -286,6 +302,104 @@ def execute_1inch_swap(from_token, to_token, amount, from_address, slippage=1):
 # Base Network Token Addresses (for reference)
 BASE_USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"  # USDC on Base
 BASE_WETH = "0x4200000000000000000000000000000000000006"  # Wrapped ETH on Base
+
+# --- 4.6. Email Confirmation Function ---
+def send_booking_confirmation_email(user_email, booking_details):
+    """Send booking confirmation email via Brevo/Sendinblue"""
+    if not BREVO_AVAILABLE or not BREVO_API_KEY:
+        print("[EMAIL] Brevo not configured. Skipping email confirmation.")
+        return False
+    
+    try:
+        configuration = sib_api_v3_sdk.Configuration()
+        configuration.api_key['api-key'] = BREVO_API_KEY
+        api_instance = sib_api_v3_sdk.TransactionalEmailsApi(sib_api_v3_sdk.ApiClient(configuration))
+        
+        # Build email content
+        html_content = f"""
+        <html>
+        <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+            <h1 style="color: #4CAF50;">🎉 Booking Confirmed!</h1>
+            <p>Your trip is booked! Here are your details:</p>
+            
+            <div style="background: #f5f5f5; padding: 20px; border-radius: 8px; margin: 20px 0;">
+                <h2>📋 Booking Reference: {booking_details.get('booking_ref', 'N/A')}</h2>
+                
+                {f'''<h3>✈️ Flight Details</h3>
+                <p><strong>Ticket Number:</strong> {booking_details.get('flight_ticket')}</p>
+                <p><strong>Flight:</strong> {booking_details.get('flight_info')}</p>''' if booking_details.get('flight_info') else ''}
+                
+                {f'''<h3>🏨 Hotel Details</h3>
+                <p><strong>Confirmation:</strong> {booking_details.get('hotel_confirmation')}</p>
+                <p><strong>Hotel:</strong> {booking_details.get('hotel_info')}</p>''' if booking_details.get('hotel_info') else ''}
+                
+                <h3>💳 Payment Confirmation</h3>
+                <p><strong>Amount Paid:</strong> {booking_details.get('amount_usdc', 0):.2f} USDC</p>
+                <p><strong>Transaction:</strong> <a href="https://sepolia.basescan.org/tx/{booking_details.get('tx_hash', '')}">View on BaseScan</a></p>
+            </div>
+            
+            <p><strong>Important:</strong> Save this email for your records!</p>
+            <p>Have a great trip! ✈️🏨</p>
+            
+            <hr style="margin: 30px 0;">
+            <p style="font-size: 12px; color: #666;">Warden Travel Agent - Crypto-powered travel booking</p>
+        </body>
+        </html>
+        """
+        
+        send_smtp_email = sib_api_v3_sdk.SendSmtpEmail(
+            to=[{"email": user_email}],
+            sender={"name": BREVO_SENDER_NAME, "email": BREVO_SENDER_EMAIL},
+            subject=f"✅ Booking Confirmed - {booking_details.get('booking_ref', 'Your Trip')}",
+            html_content=html_content
+        )
+        
+        api_instance.send_transac_email(send_smtp_email)
+        print(f"[EMAIL] Confirmation sent to {user_email}")
+        return True
+        
+    except BrevoApiException as e:
+        print(f"[EMAIL ERROR] Failed to send: {e}")
+        return False
+    except Exception as e:
+        print(f"[EMAIL ERROR] Unexpected error: {e}")
+        return False
+
+# --- 4.7. Date Validation Function ---
+def validate_dates(departure_date=None, return_date=None, check_in=None, check_out=None):
+    """Validate that dates are not in the past and check-out is after check-in"""
+    today = datetime.now().date()
+    errors = []
+    
+    try:
+        if departure_date:
+            dep = datetime.strptime(departure_date, "%Y-%m-%d").date()
+            if dep < today:
+                errors.append(f"Departure date ({departure_date}) is in the past")
+        
+        if return_date:
+            ret = datetime.strptime(return_date, "%Y-%m-%d").date()
+            if ret < today:
+                errors.append(f"Return date ({return_date}) is in the past")
+            if departure_date and ret <= dep:
+                errors.append("Return date must be after departure date")
+        
+        if check_in:
+            ci = datetime.strptime(check_in, "%Y-%m-%d").date()
+            if ci < today:
+                errors.append(f"Check-in date ({check_in}) is in the past")
+        
+        if check_out:
+            co = datetime.strptime(check_out, "%Y-%m-%d").date()
+            if co < today:
+                errors.append(f"Check-out date ({check_out}) is in the past")
+            if check_in and co <= ci:
+                errors.append("Check-out date must be after check-in date")
+    
+    except ValueError as e:
+        errors.append(f"Invalid date format: {e}")
+    
+    return errors
 
 # --- 4. Amadeus API Functions ---
 def get_amadeus_token():
@@ -574,18 +688,28 @@ Examples:
             intent_data["currency"] = curr
             symbols = {"USD": "$", "GBP": "£", "EUR": "€", "NGN": "₦", "CAD": "C$", "AUD": "A$", "JPY": "¥"}
             intent_data["currency_symbol"] = symbols.get(curr, "$")
+        if intent.user_email:
+            intent_data["user_email"] = intent.user_email
         if intent.cabin_class:
-            cabin_input = intent.cabin_class.lower().replace(" ", "_")
-            # Map common variations
+            cabin_input = intent.cabin_class.lower().replace(" ", "_").replace("-", "_")
+            # Map common variations and abbreviations
             cabin_map = {
                 "economy": "economy",
                 "eco": "economy",
+                "econ": "economy",
+                "economy_class": "economy",
+                "coach": "economy",
                 "premium": "premium_economy",
                 "premium_economy": "premium_economy",
+                "premium_eco": "premium_economy",
+                "prem": "premium_economy",
                 "business": "business",
                 "biz": "business",
+                "business_class": "business",
                 "first": "first",
                 "first_class": "first",
+                "firstclass": "first",
+                "1st": "first",
                 "1": "economy",
                 "2": "premium_economy", 
                 "3": "business",
@@ -624,6 +748,21 @@ Examples:
             intent_data["check_in"] = intent_data["departure_date"]
         if intent_data.get("return_date") and not intent_data.get("check_out"):
             intent_data["check_out"] = intent_data["return_date"]
+
+    # Validate dates (check not in past and logical order)
+    date_errors = validate_dates(
+        departure_date=state.get("departure_date") or intent_data.get("departure_date"),
+        return_date=state.get("return_date") or intent_data.get("return_date"),
+        check_in=state.get("check_in") or intent_data.get("check_in"),
+        check_out=state.get("check_out") or intent_data.get("check_out")
+    )
+    
+    if date_errors:
+        error_msg = "❌ **Date validation failed:**\n\n" + "\n".join(f"• {err}" for err in date_errors)
+        error_msg += "\n\n💡 Please provide valid future dates."
+        return {
+            "messages": [AIMessage(content=error_msg)]
+        }
 
     return intent_data
 
@@ -1216,6 +1355,11 @@ Total Cost                 {sym}{grand_total_local:.2f} {currency}
 
 ---
 
+📧 **Optional:** Provide your email for booking confirmation
+Reply with your email now or just say 'confirm' to proceed.
+
+---
+
 ✅ Reply **'yes'** or **'confirm'** to complete booking and pay {grand_total_usd:.2f} USDC
 🔄 Say **'change'** or **'start over'** to modify your booking""")
     
@@ -1401,6 +1545,23 @@ Ready for another trip? Say **'start over'** or **'new search'**
 Safe travels! ✈️🏨""")
         
         confirmation_msg = "\n".join(confirmation_parts)
+        
+        # Send email confirmation
+        user_email = state.get("user_email")
+        if user_email:
+            email_details = {
+                "booking_ref": booking_ref,
+                "flight_ticket": flight_ticket_number if state.get("selected_flight") else None,
+                "flight_info": f"{f['airline']} {f['flight_number']}: {state['origin']} → {state['destination']}" if state.get("selected_flight") else None,
+                "hotel_confirmation": hotel_confirmation if state.get("selected_hotel") else None,
+                "hotel_info": f"{h['name']} - {state['final_room_type']}" if state.get("selected_hotel") else None,
+                "amount_usdc": total_usd,
+                "tx_hash": tx_hash
+            }
+            send_booking_confirmation_email(user_email, email_details)
+            confirmation_msg += "\n\n📧 A confirmation email has been sent to your inbox."
+        else:
+            confirmation_msg += "\n\n💡 **Tip:** Next time, provide your email to receive confirmation emails!"
         
         return {
             "final_status": "Booked",
