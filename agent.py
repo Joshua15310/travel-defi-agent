@@ -814,11 +814,14 @@ def gather_requirements(state: AgentState):
 
     if not missing:
         if not state.get("currency"):
+            # Calculate rooms: 2 guests per room, round up
+            guest_count = state.get("guests", 2)
+            rooms_needed = (guest_count + 1) // 2  # Integer division with ceiling
             return {
                 "requirements_complete": True,
                 "currency": "USD",
                 "currency_symbol": "$",
-                "rooms": state.get("guests", 2)
+                "rooms": rooms_needed
             }
         return {"requirements_complete": True}
 
@@ -897,7 +900,7 @@ def search_flights(state: AgentState):
     destination = state.get("destination")
     departure_date = state.get("departure_date")
     return_date = state.get("return_date")
-    guests = state.get("guests", 1)
+    guests = state.get("guests", 2)  # Default to 2 (consistent with hotel search)
     currency = state.get("currency", "USD")
     symbol = state.get("currency_symbol", "$")
     
@@ -1632,12 +1635,23 @@ Safe travels! ✈️🏨""")
         # Send email confirmation
         user_email = state.get("user_email")
         if user_email:
+            # Safely build email details
+            flight_info = None
+            if state.get("selected_flight"):
+                f = state["selected_flight"]
+                flight_info = f"{f['airline']} {f['flight_number']}: {state['origin']} → {state['destination']}"
+            
+            hotel_info = None
+            if state.get("selected_hotel"):
+                h = state["selected_hotel"]
+                hotel_info = f"{h['name']} - {state['final_room_type']}"
+            
             email_details = {
                 "booking_ref": booking_ref,
                 "flight_ticket": flight_ticket_number if state.get("selected_flight") else None,
-                "flight_info": f"{f['airline']} {f['flight_number']}: {state['origin']} → {state['destination']}" if state.get("selected_flight") else None,
+                "flight_info": flight_info,
                 "hotel_confirmation": hotel_confirmation if state.get("selected_hotel") else None,
-                "hotel_info": f"{h['name']} - {state['final_room_type']}" if state.get("selected_hotel") else None,
+                "hotel_info": hotel_info,
                 "amount_usdc": total_usd,
                 "tx_hash": tx_hash
             }
