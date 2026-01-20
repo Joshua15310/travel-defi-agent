@@ -1457,7 +1457,15 @@ Reply with **'1'** or **'2'**"""
 1 {currency} = {rate:.4f} USD/USDC
 _(Rate updated {time.strftime('%H:%M UTC')})_"""
     
-    summary_parts = ["📋 **Complete Trip Summary**\n"]
+    # Dynamic summary title based on trip type
+    trip_type = state.get("trip_type", "")
+    if trip_type == "flight_only":
+        summary_title = "📋 **Flight Booking Summary**\n"
+    elif trip_type == "hotel_only":
+        summary_title = "📋 **Hotel Booking Summary**\n"
+    else:
+        summary_title = "📋 **Complete Trip Summary**\n"
+    summary_parts = [summary_title]
     
     if state.get("selected_flight"):
         f = state["selected_flight"]
