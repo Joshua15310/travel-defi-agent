@@ -1205,7 +1205,7 @@ def select_room(state: AgentState):
         currency = state.get("currency", "USD")
         sym = state.get("currency_symbol", "$")
         
-        flight_total_local = f["price_local"]
+        flight_total_local = f.get("price_local", f.get("price", 0))
         
         # Add platform fee (2%)
         PLATFORM_FEE_PERCENTAGE = 0.02
@@ -1406,7 +1406,7 @@ _(Rate updated {time.strftime('%H:%M UTC')})_"""
 """)
     
     summary_parts.append(f"""🏨 **Hotel**
-• {state['selected_hotel']['name']}
+• {state.get('selected_hotel', {}).get('name', 'Hotel')}
 • {selected_room['type']}
 • {state['check_in']} to {state['check_out']} ({nights} night{'s' if nights != 1 else ''})
 • {sym}{selected_room['price']}/night × {nights} = **{sym}{hotel_total_local:.2f} {currency}**
@@ -1478,11 +1478,11 @@ def book_trip(state: AgentState):
     
     if state.get("selected_flight"):
         f = state["selected_flight"]
-        booking_items.append(f"Flight: {f['airline']} {f['flight_number']} ({state['origin']}->{state['destination']})")
+        booking_items.append(f"Flight: {f.get('airline', 'Airline')} {f.get('flight_number', 'Flight')} ({state['origin']}->{state['destination']})")
     
     if state.get("selected_hotel"):
         h = state["selected_hotel"]
-        booking_items.append(f"Hotel: {h['name']} - {state['final_room_type']}")
+        booking_items.append(f"Hotel: {h.get('name', 'Hotel')} - {state['final_room_type']}")
     
     booking_description = " | ".join(booking_items) + " [Base/USDC]"
     
@@ -1523,12 +1523,12 @@ def book_trip(state: AgentState):
 📍 **Confirmation Code:** `{booking_ref[:6]}`
 
 **Flight Information:**
-• Airline: {f['airline']} Flight {f['flight_number']}
+• Airline: {f.get('airline', 'Airline')} Flight {f.get('flight_number', 'N/A')}
 • Route: {state['origin']} → {state['destination']}
 • Date: {state['departure_date']}
-• Departure Time: {f['departure_time']}
-• Arrival Time: {f['arrival_time']}
-• Duration: {f['duration']}
+• Departure Time: {f.get('departure_time', 'TBA')}
+• Arrival Time: {f.get('arrival_time', 'TBA')}
+• Duration: {f.get('duration', 'N/A')}
 • Cabin Class: {state.get('cabin_class', 'Economy').title()}
 • Baggage: 1 checked bag included
 • Passengers: {state.get('guests', 2)} traveler(s)
@@ -1557,7 +1557,7 @@ def book_trip(state: AgentState):
 📧 **Reservation Code:** `{booking_ref[-6:]}`
 
 **Hotel Information:**
-• Property: {h['name']}
+• Property: {h.get('name', 'Hotel')}
 • Room Type: {state['final_room_type']}
 • Check-in: {state['check_in']} (After 3:00 PM)
 • Check-out: {state['check_out']} (Before 11:00 AM)
