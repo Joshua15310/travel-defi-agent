@@ -608,17 +608,21 @@ def parse_intent(state: AgentState):
         if not isinstance(state["messages"][-1], HumanMessage):
             return {}  # Don't process agent's own messages
         
+        print(f"[PARSE_INTENT] Confirmation wait - checking message: '{last_msg}'")
         if any(w in last_msg for w in ["yes", "proceed", "confirm", "book it", "pay", "ok"]):
+            print("[PARSE_INTENT] User confirmed, returning empty dict to proceed")
             return {}  # User confirmed, proceed with existing state
         
         # User said something else during confirmation wait
         if any(w in last_msg for w in ["no", "cancel", "change", "start over", "modify"]):
+            print("[PARSE_INTENT] User wants to change")
             return {
                 "waiting_for_booking_confirmation": False,
                 "messages": [AIMessage(content="No problem! What would you like to change?")]
             }
         
         # User didn't clearly confirm or deny - prompt them again
+        print(f"[PARSE_INTENT] Message '{last_msg}' not recognized as confirmation")
         return {
             "messages": [AIMessage(content="⚠️ Please reply **'yes'** or **'confirm'** to complete the booking, or say **'change'** to modify.")]
         }
