@@ -437,8 +437,14 @@ def parse_intent(state: AgentState):
     
     last_msg = get_message_text(messages[-1]).lower()
     
-    # RESET
-    if "start over" in last_msg or "reset" in last_msg or "new search" in last_msg:
+    # RESET - Only check if last message is from USER (HumanMessage), not agent's own messages
+    last_human_msg = None
+    for msg in reversed(messages):
+        if isinstance(msg, HumanMessage):
+            last_human_msg = get_message_text(msg).lower()
+            break
+    
+    if last_human_msg and ("start over" in last_human_msg or "reset" in last_human_msg or "new search" in last_human_msg):
         return {
             "trip_type": None, "origin": None, "destination": None,
             "departure_date": None, "return_date": None, "check_in": None,
@@ -611,8 +617,13 @@ Examples:
         except:
             pass
 
-    # DO NOT auto-set check_in or check_out - user must specify for hotels
-    # This ensures proper conversation flow and no surprise 7-night bookings
+    # For complete_trip, sync flight and hotel dates
+    # User specifies departure_date for flights → also use as check_in for hotels
+    if state.get("trip_type") == "complete_trip":
+        if intent_data.get("departure_date") and not intent_data.get("check_in"):
+            intent_data["check_in"] = intent_data["departure_date"]
+        if intent_data.get("return_date") and not intent_data.get("check_out"):
+            intent_data["check_out"] = intent_data["return_date"]
 
     return intent_data
 
