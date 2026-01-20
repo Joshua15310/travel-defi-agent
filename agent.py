@@ -1525,11 +1525,31 @@ workflow.add_conditional_edges(
     }
 )
 
-workflow.add_edge("search_flights", "parse")  # Loop back for cabin selection or flight choice
-workflow.add_edge("search_hotels", "parse")  # Loop back for hotel selection
-workflow.add_edge("select_room", "parse")  # Loop back for room confirmation
+workflow.add_conditional_edges(
+    "search_flights",
+    lambda state: "end" if state.get("cabin_options") or state.get("flights") else "parse",
+    {"end": END, "parse": "parse"}
+)
+
+workflow.add_conditional_edges(
+    "search_hotels",
+    lambda state: "end" if state.get("hotels") else "parse",
+    {"end": END, "parse": "parse"}
+)
+
+workflow.add_conditional_edges(
+    "select_room",
+    lambda state: "end" if state.get("room_options") and not state.get("final_room_type") else "parse",
+    {"end": END, "parse": "parse"}
+)
+
 workflow.add_edge("book", END)
-workflow.add_edge("consultant", "parse")  # Loop back after consultation
+
+workflow.add_conditional_edges(
+    "consultant",
+    lambda state: "end",
+    {"end": END}
+)
 
 memory = MemorySaver()
 workflow_app = workflow.compile(checkpointer=memory)
