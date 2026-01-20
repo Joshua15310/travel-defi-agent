@@ -1712,6 +1712,12 @@ Keep under 100 words."""
 
 # --- 12. Routing Logic ---
 def route_step(state):
+    print(f"[ROUTE_STEP] trip_type={state.get('trip_type')}, waiting_confirm={state.get('waiting_for_booking_confirmation')}, final_room={state.get('final_room_type')}")
+    if state.get("messages"):
+        last_msg_type = type(state["messages"][-1]).__name__
+        last_msg_content = get_message_text(state["messages"][-1])[:50]
+        print(f"[ROUTE_STEP] Last message: {last_msg_type} - '{last_msg_content}'")
+    
     if state.get("info_request"):
         return "consultant"
     
@@ -1753,8 +1759,11 @@ def route_step(state):
             # Only check HumanMessages for confirmation
             if isinstance(state["messages"][-1], HumanMessage):
                 last_msg = get_message_text(state["messages"][-1]).lower()
+                print(f"[ROUTE_STEP HOTEL_ONLY] Checking confirmation: '{last_msg}'")
                 if any(w in last_msg for w in ["yes", "confirm", "proceed", "book", "ok"]):
+                    print("[ROUTE_STEP] CONFIRMATION DETECTED - Routing to book")
                     return "book"
+            print("[ROUTE_STEP HOTEL_ONLY] Waiting for confirmation, ending")
             return "end"
         return "end"
     
@@ -1777,8 +1786,11 @@ def route_step(state):
             # Only check HumanMessages for confirmation
             if isinstance(state["messages"][-1], HumanMessage):
                 last_msg = get_message_text(state["messages"][-1]).lower()
+                print(f"[ROUTE_STEP COMPLETE_TRIP] Checking confirmation: '{last_msg}'")
                 if any(w in last_msg for w in ["yes", "confirm", "proceed", "book", "ok"]):
+                    print("[ROUTE_STEP] CONFIRMATION DETECTED - Routing to book")
                     return "book"
+            print("[ROUTE_STEP COMPLETE_TRIP] Waiting for confirmation, ending")
             return "end"
         return "end"
     
