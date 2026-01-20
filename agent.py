@@ -856,13 +856,14 @@ def gather_requirements(state: AgentState):
         if state.get("nights"):
             nights = state["nights"]
             
-            # For complete_trip: return_date = departure_date + nights
-            if trip_type == "complete_trip" and state.get("departure_date") and not state.get("return_date"):
+            # For complete_trip: Only set check-in/check-out for hotel
+            # DO NOT set return_date - we only book ONE-WAY flights
+            if trip_type == "complete_trip" and state.get("departure_date"):
                 try:
                     dep = datetime.strptime(state["departure_date"], "%Y-%m-%d")
-                    updates["return_date"] = (dep + timedelta(days=nights)).strftime("%Y-%m-%d")
                     updates["check_in"] = state["departure_date"]  # Check-in same as departure
-                    updates["check_out"] = updates["return_date"]  # Check-out same as return
+                    updates["check_out"] = (dep + timedelta(days=nights)).strftime("%Y-%m-%d")
+                    updates["trip_mode"] = "one_way"  # Force one-way flights
                 except:
                     pass
             
