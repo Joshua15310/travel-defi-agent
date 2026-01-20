@@ -947,6 +947,8 @@ def search_flights(state: AgentState):
             # Convert USD to local currency: if GBP, 1 GBP = 1.27 USD, so 100 USD = 100/1.27 = 78.74 GBP
             price_local = round(price_usd / rate, 2) if rate != 1.0 else price_usd
             cabin_prices_local[cabin] = price_local
+            # Also add price_local to the flight dict for safety
+            flight["price_local"] = price_local
             msg_parts.append(f"\n{cabin_display.get(cabin, cabin)}: **{symbol}{price_local:,.2f}**")
         
         # Add savings context
@@ -1154,7 +1156,7 @@ def search_hotels(state: AgentState):
     
     # Filter by remaining budget (if complete trip)
     if state.get("trip_type") == "complete_trip" and state.get("selected_flight"):
-        flight_cost = state["selected_flight"]["price_local"]
+        flight_cost = state["selected_flight"].get("price_local", state["selected_flight"].get("price", 0))
         budget = state.get("budget_max", 10000)
         remaining_budget = budget - flight_cost
         all_hotels = [h for h in all_hotels if h["price"] <= remaining_budget]
@@ -1292,7 +1294,7 @@ Reply with your email now or just say 'confirm' to proceed.
         
         # Add flight cost if applicable
         if state.get("selected_flight"):
-            flight_cost = state["selected_flight"]["price_local"]
+            flight_cost = state["selected_flight"].get("price_local", state["selected_flight"].get("price", 0))
             standard_total += round(flight_cost * 1.02, 2)
             deluxe_total += round(flight_cost * 1.02, 2)
         
@@ -1370,7 +1372,7 @@ Reply with **'1'** or **'2'**"""
     flight_total_usd = 0
     
     if state.get("selected_flight"):
-        flight_total_local = state["selected_flight"]["price_local"]
+        flight_total_local = state["selected_flight"].get("price_local", state["selected_flight"].get("price", 0))
         flight_total_usd = round(flight_total_local * rate, 2)
         # Add platform fee to flight too
         flight_platform_fee = round(flight_total_local * PLATFORM_FEE_PERCENTAGE, 2)
