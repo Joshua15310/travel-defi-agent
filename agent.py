@@ -1182,6 +1182,77 @@ def search_hotels(state: AgentState):
 
 # --- 9. Node: Select Room ---
 def select_room(state: AgentState):
+    # Special case: FLIGHT_ONLY - Generate summary without hotel/room
+    if state.get("trip_type") == "flight_only" and state.get("selected_flight") and not state.get("waiting_for_booking_confirmation"):
+        f = state["selected_flight"]
+        currency = state.get("currency", "USD")
+        sym = state.get("currency_symbol", "$")
+        
+        flight_total_local = f["price_local"]
+        
+        # Add platform fee (2%)
+        PLATFORM_FEE_PERCENTAGE = 0.02
+        subtotal_local = flight_total_local
+        platform_fee_local = round(subtotal_local * PLATFORM_FEE_PERCENTAGE, 2)
+        grand_total_local = round(subtotal_local + platform_fee_local, 2)
+        
+        # Convert to USDC
+        rate = get_live_rate(currency)
+        grand_total_usd = round(grand_total_local * rate, 2)
+        
+        cabin_display = f.get('cabin', 'ECONOMY').replace('_', ' ').title()
+        
+        summary_msg = f"""✈️ **FLIGHT BOOKING SUMMARY**
+
+**Flight Details:**
+• {f['airline']} {f['flight_number']}
+• {state['origin']} → {state['destination']}
+• {state['departure_date']} at {f['departure_time']}
+• Arrival: {f['arrival_time']}
+• Duration: {f['duration']} | {f['stops']}
+• Cabin: {cabin_display}
+• Passengers: {state.get('guests', 2)} traveler(s)
+
+---
+
+💰 **Pricing Breakdown:**
+```
+Flight Ticket(s)              {sym}{subtotal_local:.2f} {currency}
+Platform Fee (2%)             {sym}{platform_fee_local:.2f} {currency}
+                             ─────────────────
+Total Cost                    {sym}{grand_total_local:.2f} {currency}
+```
+
+💳 **PAYMENT DUE: {grand_total_usd:.2f} USDC**
+🔗 Network: **Base Network** (Fast & Low Fees)
+
+📋 **What's Included in Platform Fee:**
+  ✓ Blockchain transaction gas fees
+  ✓ Smart contract security & auditing
+  ✓ 24/7 booking support
+  ✓ Payment processing & escrow
+
+---
+
+📧 **Optional:** Provide your email for booking confirmation
+Reply with your email now or just say 'confirm' to proceed.
+
+---
+
+✅ Reply **'yes'** or **'confirm'** to complete booking and pay {grand_total_usd:.2f} USDC
+🔄 Say **'change'** or **'start over'** to modify your booking"""
+        
+        return {
+            "final_flight_price": flight_total_local,
+            "final_hotel_price": 0,
+            "final_room_type": "N/A",
+            "final_total_price_local": grand_total_local,
+            "final_total_price_usd": grand_total_usd,
+            "waiting_for_booking_confirmation": True,
+            "messages": [AIMessage(content=summary_msg)]
+        }
+    
+    # Regular flow: Hotel room selection
     if state.get("selected_hotel") and not state.get("room_options"):
         hotel = state["selected_hotel"]
         sym = state.get("currency_symbol", "$")
