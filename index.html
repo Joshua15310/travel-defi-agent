@@ -12,8 +12,8 @@
         
         /* Message Styles */
         .message { margin: 8px 0; padding: 12px 16px; border-radius: 18px; max-width: 80%; line-height: 1.5; font-size: 15px; word-wrap: break-word; }
-        .user { align-self: flex-end; background: #007bff; color: white; border-bottom-right-radius: 4px; }
-        .agent { align-self: flex-start; background: #e9ecef; color: #333; border-bottom-left-radius: 4px; }
+        .user-message { align-self: flex-end; background: #007bff; color: white; border-bottom-right-radius: 4px; }
+        .agent-message { align-self: flex-start; background: #e9ecef; color: #333; border-bottom-left-radius: 4px; }
         
         /* Input Area Styles */
         .input-area { margin-top: 1rem; display: flex; gap: 10px; }
@@ -38,7 +38,7 @@
     <div class="subtitle">Your Web3 Travel Companion</div>
     
     <div class="chat-container" id="chat">
-        <div class="message agent">Hello! I'm <b>Nomad</b>. I can find hotels and handle crypto payments for you. Where do you want to go?</div>
+        <div class="message agent-message">Hello! I'm <b>Nomad</b>. I can find hotels and handle crypto payments for you. Where do you want to go?</div>
     </div>
     <div class="loading" id="loader">Nomad is thinking...</div>
     
@@ -103,7 +103,13 @@
                 const reader = response.body.getReader();
                 const decoder = new TextDecoder();
                 let buffer = '';
-                let lastMessage = '';
+                let displayedMessageCount = 0;
+                
+                // Count existing AI messages before this request
+                const chatDiv = document.getElementById("chat");
+                displayedMessageCount = Array.from(chatDiv.children).filter(
+                    el => el.classList.contains("agent-message")
+                ).length;
 
                 while (true) {
                     const { done, value } = await reader.read();
@@ -117,11 +123,13 @@
                         if (line.startsWith('data: ')) {
                             try {
                                 const data = JSON.parse(line.slice(6));
-                                // Extract last AI message from state
+                                // Extract AI messages and only display new ones
                                 if (data.messages && data.messages.length > 0) {
                                     const aiMessages = data.messages.filter(m => m.type === 'ai' || m.role === 'assistant');
-                                    if (aiMessages.length > 0) {
-                                        lastMessage = aiMessages[aiMessages.length - 1].content;
+                                    // Only display messages we haven't shown yet
+                                    for (let i = displayedMessageCount; i < aiMessages.length; i++) {
+                                        addMessage(aiMessages[i].content, "agent");
+                                        displayedMessageCount++;
                                     }
                                 }
                             } catch (e) {
@@ -129,12 +137,6 @@
                             }
                         }
                     }
-                }
-
-                if (lastMessage) {
-                    addMessage(lastMessage, "agent");
-                } else {
-                    addMessage("No response from agent", "agent");
                 }
 
             } catch (error) {
@@ -148,7 +150,7 @@
         function addMessage(text, sender) {
             const chat = document.getElementById("chat");
             const div = document.createElement("div");
-            div.className = `message ${sender}`;
+            div.className = `message ${sender}-message`;
             
             // --- CRITICAL CHANGE: Use innerHTML to render Links ---
             // This allows the clickable Etherscan link to work
