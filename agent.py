@@ -1825,7 +1825,7 @@ workflow.add_conditional_edges(
 
 workflow.add_conditional_edges(
     "select_room",
-    lambda state: "end" if state.get("room_options") and not state.get("final_room_type") else "parse",
+    lambda state: "end" if (state.get("room_options") and not state.get("final_room_type")) or state.get("waiting_for_booking_confirmation") else "parse",
     {"end": END, "parse": "parse"}
 )
 
