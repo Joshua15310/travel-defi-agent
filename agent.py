@@ -604,8 +604,11 @@ def parse_intent(state: AgentState):
 
     # CONFIRMATION - Check if we're waiting for booking confirmation
     if state.get("waiting_for_booking_confirmation"):
-        # Only process HumanMessages during confirmation wait
-        if not isinstance(state["messages"][-1], HumanMessage):
+        # Check if last message is from user (HumanMessage or dict with type='human')
+        last_message = state["messages"][-1]
+        is_human = isinstance(last_message, HumanMessage) or (isinstance(last_message, dict) and last_message.get("type") == "human")
+        
+        if not is_human:
             return {}  # Don't process agent's own messages
         
         print(f"[PARSE_INTENT] Confirmation wait - checking message: '{last_msg}'")
@@ -678,22 +681,44 @@ Examples:
     try:
         intent = structured_llm.invoke([SystemMessage(content=system_prompt)] + messages[-3:])
         
+        current_year = datetime.now().year
+        
         if intent.trip_type: 
             intent_data["trip_type"] = intent.trip_type
         if intent.origin: 
             intent_data["origin"] = intent.origin.title()
         if intent.destination: 
             intent_data["destination"] = intent.destination.title()
-        if intent.departure_date: 
+        if intent.departure_date:
+            # Fix year if LLM returned wrong year
+            parsed_date = datetime.strptime(intent.departure_date, "%Y-%m-%d")
+            if parsed_date.year < current_year:
+                parsed_date = parsed_date.replace(year=current_year)
+                intent.departure_date = parsed_date.strftime("%Y-%m-%d")
             intent_data["departure_date"] = intent.departure_date
-        if intent.return_date: 
+        if intent.return_date:
+            # Fix year if LLM returned wrong year
+            parsed_date = datetime.strptime(intent.return_date, "%Y-%m-%d")
+            if parsed_date.year < current_year:
+                parsed_date = parsed_date.replace(year=current_year)
+                intent.return_date = parsed_date.strftime("%Y-%m-%d")
             intent_data["return_date"] = intent.return_date
             intent_data["trip_mode"] = "round_trip"
         elif intent.departure_date:
             intent_data["trip_mode"] = "one_way"
-        if intent.check_in: 
+        if intent.check_in:
+            # Fix year if LLM returned wrong year
+            parsed_date = datetime.strptime(intent.check_in, "%Y-%m-%d")
+            if parsed_date.year < current_year:
+                parsed_date = parsed_date.replace(year=current_year)
+                intent.check_in = parsed_date.strftime("%Y-%m-%d")
             intent_data["check_in"] = intent.check_in
-        if intent.check_out: 
+        if intent.check_out:
+            # Fix year if LLM returned wrong year
+            parsed_date = datetime.strptime(intent.check_out, "%Y-%m-%d")
+            if parsed_date.year < current_year:
+                parsed_date = parsed_date.replace(year=current_year)
+                intent.check_out = parsed_date.strftime("%Y-%m-%d")
             intent_data["check_out"] = intent.check_out
         if intent.guests: 
             intent_data["guests"] = intent.guests
@@ -1740,11 +1765,17 @@ def route_step(state):
         if not state.get("waiting_for_booking_confirmation"):
             return "select_room"  # Reuse for summary generation
         if state.get("waiting_for_booking_confirmation"):
-            # Only check HumanMessages for confirmation
-            if isinstance(state["messages"][-1], HumanMessage):
-                last_msg = get_message_text(state["messages"][-1]).lower()
+            # Check if last message is from user (handle both HumanMessage and dict)
+            last_message = state["messages"][-1]
+            is_human = isinstance(last_message, HumanMessage) or (isinstance(last_message, dict) and last_message.get("type") == "human")
+            
+            if is_human:
+                last_msg = get_message_text(last_message).lower()
+                print(f"[ROUTE_STEP FLIGHT_ONLY] Checking confirmation: '{last_msg}'")
                 if any(w in last_msg for w in ["yes", "confirm", "proceed", "book", "ok"]):
+                    print("[ROUTE_STEP] CONFIRMATION DETECTED - Routing to book")
                     return "book"
+            print(f"[ROUTE_STEP FLIGHT_ONLY] Message type: {type(last_message).__name__}, is_human: {is_human}, waiting for confirmation")
             return "end"
         return "end"
     
@@ -1760,14 +1791,17 @@ def route_step(state):
         if not state.get("waiting_for_booking_confirmation"):
             return "end"  # Wait for user to see summary
         if state.get("waiting_for_booking_confirmation"):
-            # Only check HumanMessages for confirmation
-            if isinstance(state["messages"][-1], HumanMessage):
-                last_msg = get_message_text(state["messages"][-1]).lower()
+            # Check if last message is from user (handle both HumanMessage and dict)
+            last_message = state["messages"][-1]
+            is_human = isinstance(last_message, HumanMessage) or (isinstance(last_message, dict) and last_message.get("type") == "human")
+            
+            if is_human:
+                last_msg = get_message_text(last_message).lower()
                 print(f"[ROUTE_STEP HOTEL_ONLY] Checking confirmation: '{last_msg}'")
                 if any(w in last_msg for w in ["yes", "confirm", "proceed", "book", "ok"]):
                     print("[ROUTE_STEP] CONFIRMATION DETECTED - Routing to book")
                     return "book"
-            print("[ROUTE_STEP HOTEL_ONLY] Waiting for confirmation, ending")
+            print(f"[ROUTE_STEP HOTEL_ONLY] Message type: {type(last_message).__name__}, is_human: {is_human}, waiting for confirmation")
             return "end"
         return "end"
     
@@ -1787,14 +1821,17 @@ def route_step(state):
         if not state.get("waiting_for_booking_confirmation"):
             return "end"  # Wait for user to see summary
         if state.get("waiting_for_booking_confirmation"):
-            # Only check HumanMessages for confirmation
-            if isinstance(state["messages"][-1], HumanMessage):
-                last_msg = get_message_text(state["messages"][-1]).lower()
+            # Check if last message is from user (handle both HumanMessage and dict)
+            last_message = state["messages"][-1]
+            is_human = isinstance(last_message, HumanMessage) or (isinstance(last_message, dict) and last_message.get("type") == "human")
+            
+            if is_human:
+                last_msg = get_message_text(last_message).lower()
                 print(f"[ROUTE_STEP COMPLETE_TRIP] Checking confirmation: '{last_msg}'")
                 if any(w in last_msg for w in ["yes", "confirm", "proceed", "book", "ok"]):
                     print("[ROUTE_STEP] CONFIRMATION DETECTED - Routing to book")
                     return "book"
-            print("[ROUTE_STEP COMPLETE_TRIP] Waiting for confirmation, ending")
+            print(f"[ROUTE_STEP COMPLETE_TRIP] Message type: {type(last_message).__name__}, is_human: {is_human}, waiting for confirmation")
             return "end"
         return "end"
     
