@@ -102,6 +102,7 @@ class AgentState(TypedDict, total=False):
     # Hotel Details (reuse from before)
     check_in: str
     check_out: str
+    nights: int  # Number of nights to stay
     rooms: int
     hotels: List[dict]
     hotel_cursor: int
@@ -137,6 +138,7 @@ class TravelIntent(BaseModel):
     return_date: Optional[str] = Field(None, description="Return flight date YYYY-MM-DD")
     check_in: Optional[str] = Field(None, description="Hotel check-in YYYY-MM-DD")
     check_out: Optional[str] = Field(None, description="Hotel check-out YYYY-MM-DD")
+    nights: Optional[int] = Field(None, description="Number of nights to stay (e.g. 3, 5, 7)")
     guests: Optional[int] = Field(None, description="Number of travelers")
     budget_max: Optional[float] = Field(None, description="Total budget for trip")
     currency: Optional[str] = Field(None, description="Currency code")
@@ -648,10 +650,17 @@ Extract:
 - destination: Arrival city
 - departure_date/return_date: Flight dates
 - check_in/check_out: Hotel dates
+- nights: Number of nights to stay (extract from "3 nights", "5 days", "a week" = 7 nights)
 - guests: Number of travelers (extract from "2 adults", "3 people", "1 adult and 2 children" etc - count total number)
 - budget_max: Total budget
 - currency: USD, GBP, EUR, etc.
 - cabin_class: economy (default), business, or first
+
+Duration/Nights extraction:
+- "3 nights" → nights=3
+- "5 days" → nights=5
+- "a week" → nights=7
+- "weekend" → nights=2
 
 Date parsing rules (CRITICAL - Calculate carefully!):
 Today is {datetime.now().strftime("%A, %B %d, %Y")} ({datetime.now().strftime("%Y-%m-%d")})
@@ -673,7 +682,7 @@ IMPORTANT:
 
 Examples:
 - "Fly from London to Paris tomorrow" → trip_type=flight_only, origin=London, destination=Paris
-- "Book hotel in Tokyo" → trip_type=hotel_only, destination=Tokyo
+- "Book hotel in Tokyo for 3 nights" → trip_type=hotel_only, destination=Tokyo, nights=3
 - "2 adults flying to Paris" → guests=2
 - "Plan trip from NYC to Dubai next week" → trip_type=complete_trip, origin=NYC, destination=Dubai"""
     
@@ -720,6 +729,8 @@ Examples:
                 parsed_date = parsed_date.replace(year=current_year)
                 intent.check_out = parsed_date.strftime("%Y-%m-%d")
             intent_data["check_out"] = intent.check_out
+        if intent.nights:
+            intent_data["nights"] = intent.nights
         if intent.guests: 
             intent_data["guests"] = intent.guests
         if intent.budget_max: 
@@ -813,16 +824,13 @@ def gather_requirements(state: AgentState):
             missing.append("Departure City")
         if not state.get("departure_date"): 
             missing.append("Departure Date")
-        # For complete trips, we need return date for round-trip flights
-        if trip_type == "complete_trip" and not state.get("return_date"):
-            missing.append("Return Date")
     
-    # Check hotel requirements
+    # Check hotel requirements - ask for NIGHTS instead of check-out date
     if trip_type in ["hotel_only", "complete_trip"]:
         if not state.get("check_in"): 
             missing.append("Check-in Date")
-        if not state.get("check_out"):
-            missing.append("Check-out Date")
+        if not state.get("nights"):  # Ask for duration instead of check-out
+            missing.append("Number of Nights")
     
     # Common requirements
     if not state.get("destination"): 
@@ -833,17 +841,45 @@ def gather_requirements(state: AgentState):
         missing.append("Budget")
 
     if not missing:
+        # Calculate return_date and check_out based on nights
+        updates = {}
+        
         if not state.get("currency"):
             # Calculate rooms: 2 guests per room, round up
             guest_count = state.get("guests", 2)
-            rooms_needed = (guest_count + 1) // 2  # Integer division with ceiling
-            return {
-                "requirements_complete": True,
-                "currency": "USD",
-                "currency_symbol": "$",
-                "rooms": rooms_needed
-            }
-        return {"requirements_complete": True}
+            rooms_needed = (guest_count + 1) // 2
+            updates["currency"] = "USD"
+            updates["currency_symbol"] = "$"
+            updates["rooms"] = rooms_needed
+        
+        # Calculate dates based on nights
+        if state.get("nights"):
+            nights = state["nights"]
+            
+            # For complete_trip: return_date = departure_date + nights
+            if trip_type == "complete_trip" and state.get("departure_date") and not state.get("return_date"):
+                try:
+                    dep = datetime.strptime(state["departure_date"], "%Y-%m-%d")
+                    updates["return_date"] = (dep + timedelta(days=nights)).strftime("%Y-%m-%d")
+                    updates["check_in"] = state["departure_date"]  # Check-in same as departure
+                    updates["check_out"] = updates["return_date"]  # Check-out same as return
+                except:
+                    pass
+            
+            # For hotel_only: check_out = check_in + nights
+            if trip_type == "hotel_only" and state.get("check_in") and not state.get("check_out"):
+                try:
+                    ci = datetime.strptime(state["check_in"], "%Y-%m-%d")
+                    updates["check_out"] = (ci + timedelta(days=nights)).strftime("%Y-%m-%d")
+                except:
+                    pass
+        
+        updates["requirements_complete"] = True
+        return updates
+    
+    # If not all requirements met, don't mark as complete
+    if not state.get("requirements_complete"):
+        pass  # Continue to ask for missing items
 
     # Ask for missing
     llm = get_llm()
@@ -893,12 +929,10 @@ If asking for budget, mention currency options (e.g. "400 pounds", "300 euros").
             msg = f"🌍 Where would you like to go?"
         elif "Departure Date" in missing:
             msg = f"📅 When would you like to depart? (e.g. 2026-02-15, tomorrow, next Friday)"
-        elif "Return Date" in missing:
-            msg = f"📅 When would you like to return? (e.g. 2026-02-20, in 5 days)"
         elif "Check-in Date" in missing:
             msg = f"📅 When would you like to check in? (e.g. 2026-02-15)"
-        elif "Check-out Date" in missing:
-            msg = f"📅 When would you like to check out? (e.g. 2026-02-20)"
+        elif "Number of Nights" in missing:
+            msg = f"🌙 How many nights do you plan to stay? (e.g. 3, 5, 7)"
         elif "Number of Travelers" in missing:
             msg = f"👥 How many travelers? (e.g. 1, 2, 4)"
         else:
