@@ -50,10 +50,12 @@
 
     <script>
         // Use 'let' so we can change it when resetting the chat
-        let threadId = "user-" + Math.floor(Math.random() * 1000000);
-        console.log("Session ID:", threadId);
+        let threadId = "thread-" + Math.floor(Math.random() * 1000000);
+        console.log("Thread ID:", threadId);
 
-        const AGENT_URL = "https://warden-travel-agent-w869.onrender.com/chat";
+        // Standard LangGraph API endpoint
+        const BASE_URL = "https://warden-travel-agent-w869.onrender.com";
+        const ASSISTANT_ID = "fe096781-5601-53d2-b2f6-0d3403f7e9ca"; // Your agent's assistant ID
 
         document.getElementById("userInput").addEventListener("keypress", function(e) {
             if (e.key === "Enter") sendMessage();
@@ -62,8 +64,8 @@
         // --- NEW FEATURE: RESET CHAT ---
         function resetChat() {
             // 1. Generate new ID
-            threadId = "user-" + Math.floor(Math.random() * 1000000);
-            console.log("Chat Reset. New ID:", threadId);
+            threadId = "thread-" + Math.floor(Math.random() * 1000000);
+            console.log("Chat Reset. New Thread ID:", threadId);
             
             // 2. Clear UI
             const chat = document.getElementById("chat");
@@ -80,22 +82,60 @@
             setLoading(true);
 
             try {
-                const response = await fetch(AGENT_URL, {
+                // Standard LangGraph API: POST /threads/{thread_id}/runs/stream
+                const response = await fetch(`${BASE_URL}/threads/${threadId}/runs/stream`, {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({ 
-                        message: text, 
-                        thread_id: threadId 
+                        assistant_id: ASSISTANT_ID,
+                        input: {
+                            messages: [{ role: "user", content: text }]
+                        },
+                        stream_mode: ["values"]
                     })
                 });
 
-                const data = await response.json();
-
                 if (!response.ok) {
-                    throw new Error(data.error || "Server Error");
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
                 }
-                
-                addMessage(data.reply, "agent");
+
+                // Parse SSE stream
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+                let lastMessage = '';
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop() || '';
+
+                    for (const line of lines) {
+                        if (line.startsWith('data: ')) {
+                            try {
+                                const data = JSON.parse(line.slice(6));
+                                // Extract last AI message from state
+                                if (data.messages && data.messages.length > 0) {
+                                    const aiMessages = data.messages.filter(m => m.type === 'ai' || m.role === 'assistant');
+                                    if (aiMessages.length > 0) {
+                                        lastMessage = aiMessages[aiMessages.length - 1].content;
+                                    }
+                                }
+                            } catch (e) {
+                                // Skip invalid JSON
+                            }
+                        }
+                    }
+                }
+
+                if (lastMessage) {
+                    addMessage(lastMessage, "agent");
+                } else {
+                    addMessage("No response from agent", "agent");
+                }
 
             } catch (error) {
                 console.error(error);
