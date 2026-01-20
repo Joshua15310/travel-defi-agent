@@ -811,10 +811,19 @@ def gather_requirements(state: AgentState):
     trip_type = state.get("trip_type")
     
     if not trip_type:
-        return {
-            "requirements_complete": False,
-            "messages": [AIMessage(content="👋 **Welcome to Warden Travel!**\n\nWhat would you like to book today?\n\n✈️ **Flight only** - Just book a flight\n🏨 **Hotel only** - Just book accommodation\n🌍 **Complete trip** - Flight + Hotel package\n\nExample: 'Book a complete trip from London to Paris'")]
-        }
+        # Only send welcome message if this is the first interaction (no messages yet or only 1 message)
+        existing_messages = state.get("messages", [])
+        if len(existing_messages) <= 1:  # 0 or 1 message means first interaction
+            return {
+                "requirements_complete": False,
+                "messages": [AIMessage(content="👋 **Welcome to Warden Travel!**\n\nWhat would you like to book today?\n\n✈️ **Flight only** - Just book a flight\n🏨 **Hotel only** - Just book accommodation\n🌍 **Complete trip** - Flight + Hotel package\n\nExample: 'Book a complete trip from London to Paris'")]
+            }
+        else:
+            # Don't repeat welcome message in ongoing conversations
+            return {
+                "requirements_complete": False,
+                "messages": []
+            }
     
     missing = []
     
