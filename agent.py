@@ -774,21 +774,9 @@ Examples:
             if 0 <= idx < len(state["hotels"]):
                 return {"selected_hotel": state["hotels"][idx]}
 
-    # AUTO-DATES - ONLY for return_date on round trips, NEVER auto-set check_in/check_out
-    if intent_data.get("departure_date") and not intent_data.get("return_date") and state.get("trip_type") == "complete_trip":
-        try:
-            dep = datetime.strptime(intent_data["departure_date"], "%Y-%m-%d")
-            intent_data["return_date"] = (dep + timedelta(days=7)).strftime("%Y-%m-%d")
-        except:
-            pass
-
-    # For complete_trip, sync flight and hotel dates
-    # User specifies departure_date for flights → also use as check_in for hotels
-    if state.get("trip_type") == "complete_trip":
-        if intent_data.get("departure_date") and not intent_data.get("check_in"):
-            intent_data["check_in"] = intent_data["departure_date"]
-        if intent_data.get("return_date") and not intent_data.get("check_out"):
-            intent_data["check_out"] = intent_data["return_date"]
+    # REMOVED AUTO-DATES - Agent should NEVER auto-set return dates
+    # User must explicitly provide return_date and check_out date
+    # This prevents unwanted "7 nights" assumptions
 
     # Validate dates (check not in past and logical order)
     date_errors = validate_dates(
@@ -825,6 +813,9 @@ def gather_requirements(state: AgentState):
             missing.append("Departure City")
         if not state.get("departure_date"): 
             missing.append("Departure Date")
+        # For complete trips, we need return date for round-trip flights
+        if trip_type == "complete_trip" and not state.get("return_date"):
+            missing.append("Return Date")
     
     # Check hotel requirements
     if trip_type in ["hotel_only", "complete_trip"]:
@@ -902,6 +893,8 @@ If asking for budget, mention currency options (e.g. "400 pounds", "300 euros").
             msg = f"🌍 Where would you like to go?"
         elif "Departure Date" in missing:
             msg = f"📅 When would you like to depart? (e.g. 2026-02-15, tomorrow, next Friday)"
+        elif "Return Date" in missing:
+            msg = f"📅 When would you like to return? (e.g. 2026-02-20, in 5 days)"
         elif "Check-in Date" in missing:
             msg = f"📅 When would you like to check in? (e.g. 2026-02-15)"
         elif "Check-out Date" in missing:
