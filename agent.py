@@ -1466,12 +1466,15 @@ def route_step(state):
             if not state.get("flights"):
                 return "search_flights"
             return "end"
+        # After flight selected, go to summary (select_room generates summary)
+        if not state.get("waiting_for_booking_confirmation"):
+            return "select_room"  # Reuse for summary generation
         if state.get("waiting_for_booking_confirmation"):
             last_msg = get_message_text(state["messages"][-1]).lower()
             if any(w in last_msg for w in ["yes", "confirm", "proceed", "book", "ok"]):
                 return "book"
             return "end"
-        return "book"
+        return "end"
     
     # HOTEL ONLY FLOW
     elif trip_type == "hotel_only":
@@ -1481,6 +1484,9 @@ def route_step(state):
             return "end"
         if not state.get("final_room_type"):
             return "select_room"
+        # After room selected, should show summary and wait for confirmation
+        if not state.get("waiting_for_booking_confirmation"):
+            return "end"  # Wait for user to see summary
         if state.get("waiting_for_booking_confirmation"):
             last_msg = get_message_text(state["messages"][-1]).lower()
             if any(w in last_msg for w in ["yes", "confirm", "proceed", "book", "ok"]):
@@ -1500,6 +1506,9 @@ def route_step(state):
             return "end"
         if not state.get("final_room_type"):
             return "select_room"
+        # After room selected, should show summary and wait for confirmation
+        if not state.get("waiting_for_booking_confirmation"):
+            return "end"  # Wait for user to see summary
         if state.get("waiting_for_booking_confirmation"):
             last_msg = get_message_text(state["messages"][-1]).lower()
             if any(w in last_msg for w in ["yes", "confirm", "proceed", "book", "ok"]):
