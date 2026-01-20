@@ -602,13 +602,25 @@ def parse_intent(state: AgentState):
                 "hotels": []
             }
 
-    # CONFIRMATION
+    # CONFIRMATION - Check if we're waiting for booking confirmation
     if state.get("waiting_for_booking_confirmation"):
+        # Only process HumanMessages during confirmation wait
+        if not isinstance(state["messages"][-1], HumanMessage):
+            return {}  # Don't process agent's own messages
+        
         if any(w in last_msg for w in ["yes", "proceed", "confirm", "book it", "pay", "ok"]):
-            return {}
+            return {}  # User confirmed, proceed with existing state
+        
+        # User said something else during confirmation wait
+        if any(w in last_msg for w in ["no", "cancel", "change", "start over", "modify"]):
+            return {
+                "waiting_for_booking_confirmation": False,
+                "messages": [AIMessage(content="No problem! What would you like to change?")]
+            }
+        
+        # User didn't clearly confirm or deny - prompt them again
         return {
-            "waiting_for_booking_confirmation": False,
-            "messages": [AIMessage(content="No problem! What would you like to change?")]
+            "messages": [AIMessage(content="⚠️ Please reply **'yes'** or **'confirm'** to complete the booking, or say **'change'** to modify.")]
         }
 
     # EXTRACT INTENT
@@ -1702,9 +1714,11 @@ def route_step(state):
         if not state.get("waiting_for_booking_confirmation"):
             return "select_room"  # Reuse for summary generation
         if state.get("waiting_for_booking_confirmation"):
-            last_msg = get_message_text(state["messages"][-1]).lower()
-            if any(w in last_msg for w in ["yes", "confirm", "proceed", "book", "ok"]):
-                return "book"
+            # Only check HumanMessages for confirmation
+            if isinstance(state["messages"][-1], HumanMessage):
+                last_msg = get_message_text(state["messages"][-1]).lower()
+                if any(w in last_msg for w in ["yes", "confirm", "proceed", "book", "ok"]):
+                    return "book"
             return "end"
         return "end"
     
@@ -1720,9 +1734,11 @@ def route_step(state):
         if not state.get("waiting_for_booking_confirmation"):
             return "end"  # Wait for user to see summary
         if state.get("waiting_for_booking_confirmation"):
-            last_msg = get_message_text(state["messages"][-1]).lower()
-            if any(w in last_msg for w in ["yes", "confirm", "proceed", "book", "ok"]):
-                return "book"
+            # Only check HumanMessages for confirmation
+            if isinstance(state["messages"][-1], HumanMessage):
+                last_msg = get_message_text(state["messages"][-1]).lower()
+                if any(w in last_msg for w in ["yes", "confirm", "proceed", "book", "ok"]):
+                    return "book"
             return "end"
         return "end"
     
@@ -1742,9 +1758,11 @@ def route_step(state):
         if not state.get("waiting_for_booking_confirmation"):
             return "end"  # Wait for user to see summary
         if state.get("waiting_for_booking_confirmation"):
-            last_msg = get_message_text(state["messages"][-1]).lower()
-            if any(w in last_msg for w in ["yes", "confirm", "proceed", "book", "ok"]):
-                return "book"
+            # Only check HumanMessages for confirmation
+            if isinstance(state["messages"][-1], HumanMessage):
+                last_msg = get_message_text(state["messages"][-1]).lower()
+                if any(w in last_msg for w in ["yes", "confirm", "proceed", "book", "ok"]):
+                    return "book"
             return "end"
         return "end"
     
