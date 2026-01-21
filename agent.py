@@ -640,14 +640,21 @@ def parse_intent(state: AgentState):
     
     system_prompt = f"""You are a travel assistant. Today is {today_str}.
 
-Detect trip type:
-- "flight" or "fly" or "plane" → flight_only
-- "hotel" or "accommodation" or "stay" → hotel_only  
-- "trip" or "vacation" or "travel" or both flight+hotel mentioned → complete_trip
+Detect trip type (IMPORTANT - Be specific!):
+- "flight" or "fly" or "plane" ONLY → flight_only
+- "hotel" or "accommodation" or "stay" ONLY → hotel_only  
+- "trip" or "vacation" or "travel" or "package" or mentions BOTH origin AND destination cities → complete_trip
+- If user mentions traveling FROM somewhere TO somewhere → complete_trip (they need flight + hotel)
 
 💡 USER CONTEXT: We provide travel research and booking information.
 We search real flights (Amadeus) and hotels (Booking.com) with accurate prices,
 then give users direct links and instructions to book on major platforms.
+
+CRITICAL DETECTION RULES:
+- "Find me a trip from London to Paris" → complete_trip (mentions origin + destination = needs flight)
+- "Book a trip to Paris" → complete_trip (implies travel from somewhere)
+- "Find flights to Paris" → flight_only (only wants flights)
+- "Book hotel in Paris" → hotel_only (only wants hotel)
 
 Extract:
 - origin: Departure city (for flights)
@@ -813,6 +820,12 @@ Examples:
 # --- 6. Node: Requirements Gatherer ---
 def gather_requirements(state: AgentState):
     trip_type = state.get("trip_type")
+    
+    # Smart default: If user provides origin (FROM somewhere), default to complete_trip
+    # This catches "Find me a trip from London to Paris" even if LLM doesn't set trip_type
+    if not trip_type and state.get("origin") and state.get("destination"):
+        trip_type = "complete_trip"
+        state = {**state, "trip_type": "complete_trip"}
     
     if not trip_type:
         # Only send welcome message if this is the first interaction (no messages yet or only 1 message)
