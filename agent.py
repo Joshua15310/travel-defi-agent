@@ -645,6 +645,10 @@ Detect trip type:
 - "hotel" or "accommodation" or "stay" → hotel_only  
 - "trip" or "vacation" or "travel" or both flight+hotel mentioned → complete_trip
 
+💡 USER CONTEXT: We provide travel research and booking information.
+We search real flights (Amadeus) and hotels (Booking.com) with accurate prices,
+then give users direct links and instructions to book on major platforms.
+
 Extract:
 - origin: Departure city (for flights)
 - destination: Arrival city
@@ -816,7 +820,7 @@ def gather_requirements(state: AgentState):
         if len(existing_messages) <= 1:  # 0 or 1 message means first interaction
             return {
                 "requirements_complete": False,
-                "messages": [AIMessage(content="👋 **Welcome to Warden Travel!**\n\nWhat would you like to book today?\n\n✈️ **Flight only** - Just book a flight\n🏨 **Hotel only** - Just book accommodation\n🌍 **Complete trip** - Flight + Hotel package\n\nExample: 'Book a complete trip from London to Paris'")]
+                "messages": [AIMessage(content="👋 **Welcome to Warden Travel Research!**\n\nI'll help you find the best flights and hotels for your trip.\n\n✈️ **Flight search** - Find flights to your destination\n🏨 **Hotel search** - Find accommodation\n🌍 **Complete trip** - Search flights + hotels together\n\n💡 I'll search real availability and prices, then provide you with booking links and instructions.\n\nExample: 'Find me a trip from London to Paris'")]
             }
         else:
             # Don't repeat welcome message in ongoing conversations
@@ -1293,28 +1297,49 @@ def select_room(state: AgentState):
 • Passengers: {state.get('guests', 2)} traveler(s)
 • Estimated Price: {sym}{flight_total_local:.2f} {currency}
 
-**How to Book This Flight:**
-1. Visit: https://www.google.com/flights or https://www.kayak.com
-2. Search for: {state['origin']} to {state['destination']}
-3. Departure date: {state['departure_date']}
-4. Passengers: {state.get('guests', 2)}
-5. Select: {f.get('airline', 'Airline')} {f.get('flight_number', 'N/A')} departing at {f.get('departure_time', 'TBA')}
-6. Choose {cabin_display} class
-7. Complete booking and payment
+**Step-by-Step Booking Instructions:**
 
-💡 **Booking Tips:**
-- Book directly with airline for best flexibility
-- Compare prices on Kayak, Expedia, or Google Flights  
-- Add travel insurance if needed
-- Check baggage allowance before booking
-- Arrive at airport 2-3 hours before departure
+**Option 1: Google Flights (Recommended)**
+1. Go to https://www.google.com/flights
+2. Enter: {state['origin']} → {state['destination']}
+3. Date: {state['departure_date']}
+4. Passengers: {state.get('guests', 2)}
+5. Look for {f.get('airline', 'Airline')} flight {f.get('flight_number', 'N/A')} at {f.get('departure_time', 'TBA')}
+6. Compare prices across booking sites shown
+7. Click "Select" → Complete booking
+
+**Option 2: Book Direct with Airline**
+1. Visit {f.get('airline', 'airline')}.com
+2. Search same route and date
+3. Find flight {f.get('flight_number', 'N/A')}
+4. Choose {cabin_display} class
+5. Complete booking (often gets you loyalty points!)
+
+**Option 3: Kayak (Multi-Site Comparison)**
+1. Go to https://www.kayak.com/flights
+2. Enter same search criteria
+3. Filter by {f.get('airline', 'Airline')}
+4. Find best price for this flight
+5. Book through preferred site
+
+💡 **Pro Booking Tips:**
+✅ **Price:** £{state.get('final_flight_price', 0):.2f} is current estimate - book within 24h to lock it in
+✅ **Compare:** Check all three platforms above (prices can vary by £20-50+)
+✅ **Baggage:** Verify what's included before booking (can add £25-100 if not)
+✅ **Insurance:** Consider travel insurance (£15-40) for flexibility
+✅ **Timing:** Book on Tuesday/Wednesday mornings for best prices
+✅ **Seats:** Standard selection often free, premium costs extra
+✅ **Airport:** Arrive 2-3 hours early for international flights
+
+🔔 **Price Alert:** Set up price alerts on Google Flights if not booking immediately
 
 ---
 
-🌐 **Recommended Booking Sites:**
-- https://www.google.com/flights (Price comparison)
-- https://www.kayak.com (Multi-site search)
-- Airline direct websites (Best for changes/support)
+🌐 **Quick Links:**
+• [Google Flights](https://www.google.com/flights) - Best for comparison
+• [Kayak](https://www.kayak.com) - Multi-platform search
+• [{f.get('airline', 'Airline')}]({f.get('airline', 'airline')}.com) - Direct booking
+• [Skyscanner](https://www.skyscanner.com) - Alternative comparison
 
 ---
 
@@ -1360,15 +1385,15 @@ Safe travels! ✈️"""
             {"type": "Deluxe Suite", "price": round(hotel["price"] * 1.4, 2)}
         ]
         
-        # Calculate total costs for each option (including platform fee)
-        standard_total = round(room_options[0]['price'] * nights * 1.02, 2)
-        deluxe_total = round(room_options[1]['price'] * nights * 1.02, 2)
+        # Calculate total costs for each option (no platform fees - information only)
+        standard_total = round(room_options[0]['price'] * nights, 2)
+        deluxe_total = round(room_options[1]['price'] * nights, 2)
         
         # Add flight cost if applicable
         if state.get("selected_flight"):
             flight_cost = state["selected_flight"].get("price_local", state["selected_flight"].get("price", 0))
-            standard_total += round(flight_cost * 1.02, 2)
-            deluxe_total += round(flight_cost * 1.02, 2)
+            standard_total += flight_cost
+            deluxe_total += flight_cost
         
         # Budget check
         budget = state.get("budget_max")
@@ -1386,12 +1411,12 @@ Safe travels! ✈️"""
 Please select a room type:
 
 **1. Standard Room**
-   💵 {sym}{room_options[0]['price']}/night × {nights} nights = {sym}{room_options[0]['price'] * nights:.2f}
-   📊 Total with platform fee: ~{sym}{standard_total:.2f} {currency}
+   💵 {sym}{room_options[0]['price']:.2f}/night × {nights} nights = {sym}{room_options[0]['price'] * nights:.2f}
+   📊 Estimated total: {sym}{standard_total:.2f} {currency}
    
 **2. Deluxe Suite** ⭐
-   💵 {sym}{room_options[1]['price']}/night × {nights} nights = {sym}{room_options[1]['price'] * nights:.2f}
-   📊 Total with platform fee: ~{sym}{deluxe_total:.2f} {currency}
+   💵 {sym}{room_options[1]['price']:.2f}/night × {nights} nights = {sym}{room_options[1]['price'] * nights:.2f}
+   📊 Estimated total: {sym}{deluxe_total:.2f} {currency}
    ✨ Upgraded amenities, better views{budget_msg}
 
 Reply with **'1'** or **'2'**"""
@@ -1430,14 +1455,9 @@ Reply with **'1'** or **'2'**"""
     currency = state.get("currency", "USD")
     sym = state.get("currency_symbol", "$")
     
-    # Add platform fee (2%)
-    PLATFORM_FEE_PERCENTAGE = 0.02  # 2% platform fee
-    platform_fee_local = round(hotel_total_local * PLATFORM_FEE_PERCENTAGE, 2)
-    
-    # Fetch live rate
+    # Fetch live rate for currency conversion
     rate = get_live_rate(currency)
     hotel_total_usd = round(hotel_total_local * rate, 2)
-    platform_fee_usd = round(platform_fee_local * rate, 2)
     
     # Calculate grand total (including platform fee)
     flight_total_local = 0
@@ -1446,22 +1466,14 @@ Reply with **'1'** or **'2'**"""
     if state.get("selected_flight"):
         flight_total_local = state["selected_flight"].get("price_local", state["selected_flight"].get("price", 0))
         flight_total_usd = round(flight_total_local * rate, 2)
-        # Add platform fee to flight too
-        flight_platform_fee = round(flight_total_local * PLATFORM_FEE_PERCENTAGE, 2)
-        platform_fee_local += flight_platform_fee
-        platform_fee_usd += round(flight_platform_fee * rate, 2)
     
+    # Simple calculation: flight + hotel = total (no platform fees for information-only)
     subtotal_local = hotel_total_local + flight_total_local
-    grand_total_local = subtotal_local + platform_fee_local
-    grand_total_usd = hotel_total_usd + flight_total_usd + platform_fee_usd
+    grand_total_local = subtotal_local  # No fees added
+    grand_total_usd = hotel_total_usd + flight_total_usd  # No fees added
     
-    # Build summary
-    if currency in ["USD", "USDC"]:
-        rate_info = "💵 Payment in **USDC** (1:1 with USD)"
-    else:
-        rate_info = f"""💱 **Live Exchange Rate**
-1 {currency} = {rate:.4f} USD/USDC
-_(Rate updated {time.strftime('%H:%M UTC')})_"""
+    # Build summary (information only - no payments)
+    rate_info = f"💰 **Price Estimate in {currency}**\n_(Current exchange rate: 1 {currency} = {rate:.4f} USD as of {time.strftime('%H:%M UTC')})_" if currency not in ["USD", "USDC"] else ""
     
     # Dynamic summary title based on trip type
     trip_type = state.get("trip_type", "")
@@ -1495,14 +1507,15 @@ _(Rate updated {time.strftime('%H:%M UTC')})_"""
 
 ---
 
-💰 **Pricing Breakdown:**
+💰 **Estimated Total Cost:**
 ```
-Subtotal (Travel Costs)    {sym}{subtotal_local:.2f} {currency}
-                          ─────────────────
-Estimated Total            {sym}{grand_total_local:.2f} {currency}
+Flight:  {sym}{flight_total_local:.2f} {currency}
+Hotel:   {sym}{hotel_total_local:.2f} {currency}
+         ─────────────────
+Total:   {sym}{grand_total_local:.2f} {currency}
 ```
 
-⚠️ **Note:** Actual prices may vary when booking. Always verify final price before payment.
+⚠️ **Important:** These are estimated prices from our search. Actual prices may vary slightly when booking. Always verify the final price before completing your purchase on the booking platform.
 
 ---
 
@@ -1560,20 +1573,28 @@ def book_trip(state: AgentState):
 • Passengers: {state.get('guests', 2)} traveler(s)
 • Price: {sym}{state.get('final_flight_price', 0):.2f} {currency}
 
-**How to Book This Flight:**
-1. Visit: https://www.amadeus.com or https://www.kayak.com
-2. Search for: {state['origin']} to {state['destination']}
-3. Departure date: {state['departure_date']}
-4. Passengers: {state.get('guests', 2)}
-5. Select: {f.get('airline', 'Airline')} {f.get('flight_number', 'N/A')} departing at {f.get('departure_time', 'TBA')}
-6. Choose {cabin_display} class
-7. Complete booking and payment
+**Step-by-Step Flight Booking:**
 
-💡 **Booking Tips:**
-- Book directly with airline for best flexibility
-- Compare prices on Kayak, Expedia, or Google Flights
-- Add travel insurance if needed
-- Check baggage allowance before booking
+1. **Google Flights:** https://www.google.com/flights
+   • Search: {state['origin']} → {state['destination']}
+   • Date: {state['departure_date']}
+   • Find: {f.get('airline', 'Airline')} {f.get('flight_number', 'N/A')}
+   • Compare prices and book
+
+2. **OR Direct:** {f.get('airline', 'airline')}.com
+   • Same search criteria
+   • Often best for loyalty points/changes
+
+3. **OR Kayak:** https://www.kayak.com/flights
+   • Multi-platform comparison
+   • Price tracking available
+
+💡 **Flight Booking Tips:**
+✅ Current price: {sym}{state.get('final_flight_price', 0):.2f} - book soon to secure it
+✅ Compare all platforms (prices can differ by £20-100)
+✅ Check baggage allowance (can add £25-100 if not included)
+✅ Consider travel insurance (£15-40) for peace of mind
+✅ Book Tuesday/Wednesday mornings for best rates
 """)
     
     # Hotel Booking Information
