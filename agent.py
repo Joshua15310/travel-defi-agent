@@ -1265,72 +1265,78 @@ def search_hotels(state: AgentState):
 
 # --- 9. Node: Select Room ---
 def select_room(state: AgentState):
-    # Special case: FLIGHT_ONLY - Generate summary without hotel/room
+    # Special case: FLIGHT_ONLY - Provide booking information
     if state.get("trip_type") == "flight_only" and state.get("selected_flight") and not state.get("waiting_for_booking_confirmation"):
         f = state["selected_flight"]
         currency = state.get("currency", "USD")
         sym = state.get("currency_symbol", "$")
         
         flight_total_local = f.get("price_local", f.get("price", 0))
-        
-        # Add platform fee (2%)
-        PLATFORM_FEE_PERCENTAGE = 0.02
-        subtotal_local = flight_total_local
-        platform_fee_local = round(subtotal_local * PLATFORM_FEE_PERCENTAGE, 2)
-        grand_total_local = round(subtotal_local + platform_fee_local, 2)
-        
-        # Convert to USDC
-        rate = get_live_rate(currency)
-        grand_total_usd = round(grand_total_local * rate, 2)
-        
         cabin_display = f.get('cabin', 'ECONOMY').replace('_', ' ').title()
         
-        summary_msg = f"""✈️ **FLIGHT BOOKING SUMMARY**
+        summary_msg = f"""📋 **YOUR FLIGHT BOOKING INFORMATION**
+
+✅ Here's everything you need to book this flight!
+
+---
+✈️ **FLIGHT TO BOOK**
 
 **Flight Details:**
-• {f['airline']} {f['flight_number']}
-• {state['origin']} → {state['destination']}
-• {state['departure_date']} at {f['departure_time']}
-• Arrival: {f['arrival_time']}
-• Duration: {f['duration']} | {f['stops']}
-• Cabin: {cabin_display}
+• Airline: {f.get('airline', 'Airline')} Flight {f.get('flight_number', 'N/A')}
+• Route: {state['origin']} → {state['destination']}
+• Date: {state['departure_date']}
+• Departure: {f.get('departure_time', 'TBA')}
+• Arrival: {f.get('arrival_time', 'TBA')}
+• Duration: {f.get('duration', 'N/A')}
+• Stops: {f.get('stops', 'Direct')}
+• Cabin Class: {cabin_display}
 • Passengers: {state.get('guests', 2)} traveler(s)
+• Estimated Price: {sym}{flight_total_local:.2f} {currency}
+
+**How to Book This Flight:**
+1. Visit: https://www.google.com/flights or https://www.kayak.com
+2. Search for: {state['origin']} to {state['destination']}
+3. Departure date: {state['departure_date']}
+4. Passengers: {state.get('guests', 2)}
+5. Select: {f.get('airline', 'Airline')} {f.get('flight_number', 'N/A')} departing at {f.get('departure_time', 'TBA')}
+6. Choose {cabin_display} class
+7. Complete booking and payment
+
+💡 **Booking Tips:**
+- Book directly with airline for best flexibility
+- Compare prices on Kayak, Expedia, or Google Flights  
+- Add travel insurance if needed
+- Check baggage allowance before booking
+- Arrive at airport 2-3 hours before departure
 
 ---
 
-💰 **Pricing Breakdown:**
-```
-Flight Ticket(s)              {sym}{subtotal_local:.2f} {currency}
-Platform Fee (2%)             {sym}{platform_fee_local:.2f} {currency}
-                             ─────────────────
-Total Cost                    {sym}{grand_total_local:.2f} {currency}
-```
-
-💳 **PAYMENT DUE: {grand_total_usd:.2f} USDC**
-🔗 Network: **Base Network** (Fast & Low Fees)
-
-📋 **What's Included in Platform Fee:**
-  ✓ Blockchain transaction gas fees
-  ✓ Smart contract security & auditing
-  ✓ 24/7 booking support
-  ✓ Payment processing & escrow
+🌐 **Recommended Booking Sites:**
+- https://www.google.com/flights (Price comparison)
+- https://www.kayak.com (Multi-site search)
+- Airline direct websites (Best for changes/support)
 
 ---
 
-📧 **Optional:** Provide your email for booking confirmation
-Reply with your email now or just say 'confirm' to proceed.
+💡 **Why We Don't Book Directly**
+
+Currently, Warden Hub agents can search and provide information but cannot process payments for bookings. We've found the best option for you - now you can book with confidence using the major booking platforms above!
 
 ---
 
-✅ Reply **'yes'** or **'confirm'** to complete booking and pay {grand_total_usd:.2f} USDC
-🔄 Say **'change'** or **'start over'** to modify your booking"""
+🌟 **Need Different Options?**
+
+Say **'start over'** to search again
+Say **'show more flights'** for other options
+
+Safe travels! ✈️"""
         
         return {
             "final_flight_price": flight_total_local,
             "final_hotel_price": 0,
             "final_room_type": "N/A",
-            "final_total_price_local": grand_total_local,
-            "final_total_price_usd": grand_total_usd,
+            "final_total_price_local": flight_total_local,
+            "final_total_price_usd": 0,
             "waiting_for_booking_confirmation": True,
             "messages": [AIMessage(content=summary_msg)]
         }
@@ -1492,38 +1498,18 @@ _(Rate updated {time.strftime('%H:%M UTC')})_"""
 💰 **Pricing Breakdown:**
 ```
 Subtotal (Travel Costs)    {sym}{subtotal_local:.2f} {currency}
-Platform Fee (2%)          {sym}{platform_fee_local:.2f} {currency}
                           ─────────────────
-Total Cost                 {sym}{grand_total_local:.2f} {currency}
+Estimated Total            {sym}{grand_total_local:.2f} {currency}
 ```
 
-{rate_info}
-
-💳 **PAYMENT DUE: {grand_total_usd:.2f} USDC**
-🔗 Network: **Base Network** (Fast & Low Fees)
-⛽ Estimated Gas: ~$0.01 USD (covered by platform)
-
-📋 **What's Included in Platform Fee:**
-  ✓ Blockchain transaction gas fees
-  ✓ Smart contract security & auditing
-  ✓ 24/7 booking support
-  ✓ Payment processing & escrow
-
-💡 **Why USDC on Base?**
-  • Instant confirmation (no bank delays)
-  • Transparent on-chain proof
-  • Lower fees than credit cards (~3%)
-  • Full control of your funds
+⚠️ **Note:** Actual prices may vary when booking. Always verify final price before payment.
 
 ---
 
-📧 **Optional:** Provide your email for booking confirmation
-Reply with your email now or just say 'confirm' to proceed.
+📝 **What to Do Next:**
 
----
-
-✅ Reply **'yes'** or **'confirm'** to complete booking and pay {grand_total_usd:.2f} USDC
-🔄 Say **'change'** or **'start over'** to modify your booking""")
+✅ Reply **'yes'** or **'confirm'** to see complete booking details
+🔄 Say **'change'** or **'start over'** to modify your selection""")
     
     summary_msg = "\n".join(summary_parts)
     
@@ -1537,220 +1523,174 @@ Reply with your email now or just say 'confirm' to proceed.
         "messages": [AIMessage(content=summary_msg)]
     }
 
-# --- 10. Node: Book Complete Trip ---
+# --- 10. Node: Provide Booking Information (Modified from book_trip) ---
 def book_trip(state: AgentState):
+    """
+    Provides complete booking information and instructions to users.
+    Does NOT make actual bookings - gives users all details to book themselves.
+    """
     if not state.get("waiting_for_booking_confirmation"):
         return {}
     
     currency = state.get("currency", "USD")
     sym = state.get("currency_symbol", "$")
-    total_usd = state["final_total_price_usd"]
     total_local = state["final_total_price_local"]
     
-    # Build booking details
-    booking_items = []
+    # Build comprehensive booking guide
+    confirmation_parts = ["📋 **YOUR COMPLETE BOOKING INFORMATION**\n"]
+    confirmation_parts.append("✅ Here's everything you need to book your trip!\n")
     
+    # Flight Booking Information
     if state.get("selected_flight"):
         f = state["selected_flight"]
-        booking_items.append(f"Flight: {f.get('airline', 'Airline')} {f.get('flight_number', 'Flight')} ({state['origin']}->{state['destination']})")
-    
-    if state.get("selected_hotel"):
-        h = state["selected_hotel"]
-        booking_items.append(f"Hotel: {h.get('name', 'Hotel')} - {state['final_room_type']}")
-    
-    booking_description = " | ".join(booking_items) + " [Base/USDC]"
-    
-    try:
-        result = warden_client.submit_booking(
-            hotel_name=booking_description,
-            hotel_price=total_usd,
-            destination=state["destination"],
-            swap_amount=0.0
-        )
+        cabin_display = f.get('cabin', 'ECONOMY').replace('_', ' ').title()
         
-        tx_hash = result.get("tx_hash", "0xMOCK")
-        booking_ref = result.get("booking_ref", f"WRD-{tx_hash[-8:].upper()}")
-        
-        # Generate unique ticket/confirmation numbers
-        import random
-        
-        # In production, use real booking references
-        if PRODUCTION_MODE and state.get("selected_flight") and not state["selected_flight"].get("is_mock"):
-            # Real flight booking would return actual PNR/ticket number
-            flight_ticket_number = f"TKT-{state['selected_flight'].get('booking_token', '')[:6].upper()}"
-        else:
-            flight_ticket_number = f"TKT-{random.randint(100000, 999999)}" if state.get("selected_flight") else None
-        
-        hotel_confirmation = f"HTL-{random.randint(100000, 999999)}" if state.get("selected_hotel") else None
-        
-        # Build confirmation message with detailed booking info
-        confirmation_parts = ["🎉 **BOOKING CONFIRMED!**\n\n✅ Your trip is booked! Save these details:\n"]
-        
-        confirmation_parts.append(f"📋 **Master Booking Reference:** `{booking_ref}`\n")
-        
-        if state.get("selected_flight"):
-            f = state["selected_flight"]
-            confirmation_parts.append(f"""---
-✈️ **FLIGHT BOOKING DETAILS**
+        confirmation_parts.append(f"""---
+✈️ **FLIGHT TO BOOK**
 
-🎫 **E-Ticket Number:** `{flight_ticket_number}`
-📍 **Confirmation Code:** `{booking_ref[:6]}`
-
-**Flight Information:**
+**Flight Details:**
 • Airline: {f.get('airline', 'Airline')} Flight {f.get('flight_number', 'N/A')}
 • Route: {state['origin']} → {state['destination']}
 • Date: {state['departure_date']}
-• Departure Time: {f.get('departure_time', 'TBA')}
-• Arrival Time: {f.get('arrival_time', 'TBA')}
+• Departure: {f.get('departure_time', 'TBA')}
+• Arrival: {f.get('arrival_time', 'TBA')}
 • Duration: {f.get('duration', 'N/A')}
-• Cabin Class: {state.get('cabin_class', 'Economy').title()}
-• Baggage: 1 checked bag included
+• Stops: {f.get('stops', 'Direct')}
+• Cabin Class: {cabin_display}
 • Passengers: {state.get('guests', 2)} traveler(s)
+• Price: {sym}{state.get('final_flight_price', 0):.2f} {currency}
 
-💵 Flight Cost: {sym}{state.get('final_flight_price', 0):.2f} {currency}
+**How to Book This Flight:**
+1. Visit: https://www.amadeus.com or https://www.kayak.com
+2. Search for: {state['origin']} to {state['destination']}
+3. Departure date: {state['departure_date']}
+4. Passengers: {state.get('guests', 2)}
+5. Select: {f.get('airline', 'Airline')} {f.get('flight_number', 'N/A')} departing at {f.get('departure_time', 'TBA')}
+6. Choose {cabin_display} class
+7. Complete booking and payment
 
-**Airport Check-in:**
-🕐 Arrive 2-3 hours before departure
-📱 Show this ticket number: `{flight_ticket_number}`
-🆔 Bring valid ID/Passport
+💡 **Booking Tips:**
+- Book directly with airline for best flexibility
+- Compare prices on Kayak, Expedia, or Google Flights
+- Add travel insurance if needed
+- Check baggage allowance before booking
 """)
-        
-        if state.get("selected_hotel"):
-            h = state["selected_hotel"]
-            try:
-                d1 = datetime.strptime(state['check_in'], "%Y-%m-%d")
-                d2 = datetime.strptime(state['check_out'], "%Y-%m-%d")
-                nights = max(1, (d2 - d1).days)
-            except:
-                nights = 2
-            
-            confirmation_parts.append(f"""---
-🏨 **HOTEL BOOKING DETAILS**
-
-🔑 **Confirmation Number:** `{hotel_confirmation}`
-📧 **Reservation Code:** `{booking_ref[-6:]}`
-
-**Hotel Information:**
-• Property: {h.get('name', 'Hotel')}
-• Room Type: {state['final_room_type']}
-• Check-in: {state['check_in']} (After 3:00 PM)
-• Check-out: {state['check_out']} (Before 11:00 AM)
-• Duration: {nights} night(s)
-• Guests: {state.get('guests', 2)} guest(s)
-
-💵 Hotel Cost: {sym}{state.get('final_hotel_price', 0):.2f} {currency}
-
-**Hotel Check-in Instructions:**
-🕒 Check-in after 3:00 PM
-📱 Show confirmation: `{hotel_confirmation}`
-🆔 Bring valid ID/Credit card
-💳 Deposit may be required
-""")
-        
-        # Calculate components for detailed breakdown
-        if state.get("final_hotel_price") and state.get("final_flight_price"):
-            hotel_local = state.get("final_hotel_price", 0)
-            flight_local = state.get("final_flight_price", 0)
-            subtotal_usd = round((hotel_local + flight_local) * get_live_rate(currency), 2)
-            platform_fee_usd = round(total_usd - subtotal_usd, 2)
-        else:
-            subtotal_usd = round(total_usd / 1.02, 2)
-            platform_fee_usd = round(total_usd - subtotal_usd, 2)
+    
+    # Hotel Booking Information
+    if state.get("selected_hotel"):
+        h = state["selected_hotel"]
+        try:
+            d1 = datetime.strptime(state['check_in'], "%Y-%m-%d")
+            d2 = datetime.strptime(state['check_out'], "%Y-%m-%d")
+            nights = max(1, (d2 - d1).days)
+        except:
+            nights = 2
         
         confirmation_parts.append(f"""---
-💳 **PAYMENT CONFIRMATION**
+🏨 **HOTEL TO BOOK**
 
-✅ **Transaction Successful on Base Network**
+**Hotel Details:**
+• Property: {h.get('name', 'Hotel')}
+• Room Type: {state['final_room_type']}
+• Check-in: {state['check_in']}
+• Check-out: {state['check_out']}
+• Duration: {nights} night(s)
+• Guests: {state.get('guests', 2)} guest(s)
+• Price: {sym}{state.get('final_hotel_price', 0):.2f} {currency} total
+
+**How to Book This Hotel:**
+1. Visit: https://www.booking.com
+2. Enter: "{h.get('name', 'Hotel')}"
+3. Select dates:
+   - Check-in: {state['check_in']}
+   - Check-out: {state['check_out']}
+4. Guests: {state.get('guests', 2)}
+5. Choose: {state['final_room_type']}
+6. Complete booking and payment
+
+💡 **Booking Tips:**
+- Compare prices on Booking.com, Hotels.com, and hotel's website
+- Check cancellation policy before booking
+- Consider booking refundable rates for flexibility
+- Some hotels offer discounts for direct bookings
+""")
+    
+    # Total Cost Summary
+    confirmation_parts.append(f"""---
+💰 **TOTAL COST BREAKDOWN**
 
 ```
-ITEMIZED BREAKDOWN
-─────────────────────────────────────
-Travel Services          {subtotal_usd:.2f} USDC
-Platform Fee (2%)        {platform_fee_usd:.2f} USDC
-                        ─────────────
-Total Paid               {total_usd:.2f} USDC
-
-Local Currency Equiv.    {sym}{total_local:.2f} {currency}
+{"Flight:" if state.get("selected_flight") else ""} {sym}{state.get('final_flight_price', 0):.2f} {currency if state.get("selected_flight") else ""}
+{"Hotel:" if state.get("selected_hotel") else ""} {sym}{state.get('final_hotel_price', 0):.2f} {currency if state.get("selected_hotel") else ""}
+                    ─────────────
+Estimated Total:    {sym}{total_local:.2f} {currency}
 ```
 
-🔗 **Blockchain Receipt:**
-[View Transaction on BaseScan](https://sepolia.basescan.org/tx/{tx_hash})
-
-⚡ **Transaction Details:**
-• Network: Base (Layer 2 Ethereum)
-• Token: USDC (USD Coin)
-• Gas Fee: ~$0.01 (included in platform fee)
-• Confirmation: Instant
-• Status: ✅ Confirmed & Immutable
-
-📱 **Save Your Receipt:**
-Screenshot this confirmation or save the transaction hash: `{tx_hash[:16]}...`
+⚠️ **Note:** Actual prices may vary slightly when booking.
+Always verify final price before completing payment.
 
 ---
 
-📧 **Important Reminders:**
-• Screenshot or save these booking numbers
-• Check-in online 24 hours before flight
-• Arrive at airport 2-3 hours early
-• Bring valid ID and payment method
-• Contact hotel directly for special requests
+📝 **BOOKING CHECKLIST**
 
-🆘 **Need Help?**
-Having issues? Quote your booking ref: `{booking_ref}`
+Before you book, make sure you have:
+✓ Valid passport/ID
+✓ Payment method (credit/debit card)
+✓ Email address for confirmations
+✓ Emergency contact information
+✓ Travel insurance (recommended)
+
+📞 **Travel Tips:**
+• Book flights and hotels separately for best prices
+• Check visa requirements for your destination
+• Arrive at airport 2-3 hours before departure
+• Save all booking confirmations
+• Consider travel insurance for trip protection
+
+🌐 **Recommended Booking Sites:**
+
+**For Flights:**
+- https://www.google.com/flights (Price comparison)
+- https://www.kayak.com (Multi-site search)
+- Airline direct websites (Best for changes/support)
+
+**For Hotels:**
+- https://www.booking.com (Widest selection)
+- https://www.hotels.com (Rewards program)
+- Hotel direct websites (Sometimes better deals)
 
 ---
 
-🌟 **Thank you for booking with Warden Travel!**
+💡 **Why We Don't Book Directly**
 
-Ready for another trip? Say **'start over'** or **'new search'**
+Currently, Warden Hub agents can search and provide information but cannot process payments for bookings. We've found the best options for you - now you can book with confidence using the major booking platforms above!
+
+---
+
+🌟 **Need Different Options?**
+
+Say **'start over'** to search again
+Say **'show more flights'** or **'show more hotels'** for other options
 
 Safe travels! ✈️🏨""")
-        
-        confirmation_msg = "\n".join(confirmation_parts)
-        
-        # Send email confirmation
-        user_email = state.get("user_email")
-        if user_email:
-            # Safely build email details
-            flight_info = None
-            if state.get("selected_flight"):
-                f = state["selected_flight"]
-                flight_info = f"{f['airline']} {f['flight_number']}: {state['origin']} → {state['destination']}"
-            
-            hotel_info = None
-            if state.get("selected_hotel"):
-                h = state["selected_hotel"]
-                hotel_info = f"{h['name']} - {state['final_room_type']}"
-            
-            email_details = {
-                "booking_ref": booking_ref,
-                "flight_ticket": flight_ticket_number if state.get("selected_flight") else None,
-                "flight_info": flight_info,
-                "hotel_confirmation": hotel_confirmation if state.get("selected_hotel") else None,
-                "hotel_info": hotel_info,
-                "amount_usdc": total_usd,
-                "tx_hash": tx_hash
-            }
-            send_booking_confirmation_email(user_email, email_details)
-            confirmation_msg += "\n\n📧 A confirmation email has been sent to your inbox."
-        else:
-            confirmation_msg += "\n\n💡 **Tip:** Next time, provide your email to receive confirmation emails!"
-        
-        return {
-            "final_status": "Booked",
-            "flight_booked": True,
-            "hotel_booked": True,
-            "waiting_for_booking_confirmation": False,
-            "messages": [AIMessage(content=confirmation_msg)]
-        }
-        
-    except Exception as e:
-        print(f"[BOOKING ERROR] {e}")
-        return {
-            "final_status": "Failed",
-            "waiting_for_booking_confirmation": False,
-            "messages": [AIMessage(content=f"❌ Booking failed: {str(e)}\n\nPlease try again or contact support.")]
-        }
+    
+    confirmation_msg = "\n".join(confirmation_parts)
+    
+    return {
+        "final_status": "Information Provided",
+        "flight_booked": False,
+        "hotel_booked": False,
+        "waiting_for_booking_confirmation": False,
+        "messages": [AIMessage(content=confirmation_msg)]
+    }
+    
+    currency = state.get("currency", "USD")
+    sym = state.get("currency_symbol", "$")
+    total_local = state["final_total_price_local"]
+    
+    # Build comprehensive booking guide
+    confirmation_parts = ["📋 **YOUR COMPLETE BOOKING INFORMATION**\n"]
+    confirmation_parts.append("✅ Here's everything you need to book your trip!\n")
 
 # --- 11. Node: Consultant ---
 def consultant_node(state: AgentState):
