@@ -166,10 +166,12 @@ async def send_message(thread_id: str, request: MessageRequest):
 
 
 @app.get("/threads/{thread_id}/history")
+@app.post("/threads/{thread_id}/history")
 async def get_thread_history(thread_id: str):
     """
     Get message history for a thread.
     Required by Warden Hub and Vercel integration.
+    Supports both GET and POST methods.
     """
     try:
         # Get thread data from checkpointer
