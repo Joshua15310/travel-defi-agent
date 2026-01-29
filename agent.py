@@ -1917,58 +1917,13 @@ workflow_app = workflow.compile(checkpointer=memory)
 workflow_app.name = "Warden Travel Research"
 workflow_app.description = "AI travel assistant that searches real flights (Amadeus) and hotels (Booking.com) worldwide and provides booking links and instructions"
 
-# --- Add Missing Endpoint for Warden Verification ---
-# Warden requires GET /threads/{thread_id}/history for agent verification
-# This endpoint returns the message history for a given thread
-try:
-    from fastapi import FastAPI, HTTPException
-    from fastapi.middleware.cors import CORSMiddleware
-    
-    # Create FastAPI app to wrap the workflow
-    app = FastAPI(title="Warden Travel Research Agent")
-    
-    # Add CORS
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
-    
-    @app.get("/threads/{thread_id}/history")
-    async def get_thread_history(thread_id: str):
-        """Get message history for a thread (required by Warden verification)."""
-        try:
-            # Try to get the thread from the checkpointer
-            thread_data = memory.get(config={"configurable": {"thread_id": thread_id}})
-            if thread_data:
-                # Extract messages from thread state
-                messages = thread_data.values.get("messages", [])
-                return {
-                    "thread_id": thread_id,
-                    "messages": [
-                        {
-                            "type": msg.type if hasattr(msg, "type") else "message",
-                            "content": msg.content if hasattr(msg, "content") else str(msg),
-                            "role": "assistant" if hasattr(msg, "type") and msg.type == "ai" else "user"
-                        }
-                        for msg in (messages if isinstance(messages, list) else [])
-                    ]
-                }
-            else:
-                # New thread - return empty history
-                return {"thread_id": thread_id, "messages": []}
-        except Exception as e:
-            print(f"[ERROR] Failed to get thread history: {e}")
-            return {"thread_id": thread_id, "messages": []}
-    
-    # Mount the LangGraph workflow at /
-    app.include_router(workflow_app, prefix="")
-    
-    graph = workflow_app  # For compatibility
-    
-except ImportError:
-    # Fallback if FastAPI not available - use workflow_app directly
-    app = workflow_app
-    graph = workflow_app
+# --- LangGraph entrypoint (EXPORTED) ---
+
+# If you already created a StateGraph somewhere above like:
+# workflow = StateGraph(AgentState)
+# ... add nodes/edges ...
+# then compile it here.
+app = workflow_app
+graph = workflow_app
+ # optional alias for compatibility
+
