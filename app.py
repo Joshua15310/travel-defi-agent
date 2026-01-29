@@ -96,6 +96,45 @@ async def create_thread(request: Optional[ThreadCreateRequest] = None):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/threads/search")
+async def search_all_threads(request: SearchRequest):
+    """
+    Global search endpoint (Vercel compatibility).
+    Returns empty results for metadata-only requests.
+    """
+    try:
+        # If no message, return empty search results
+        if not request.message:
+            return {
+                "thread_id": None,
+                "messages": []
+            }
+        
+        # If message provided, create new thread and search
+        import uuid
+        thread_id = str(uuid.uuid4())
+        config = {"configurable": {"thread_id": thread_id}}
+        
+        input_data = {"messages": [{"role": "user", "content": request.message}]}
+        result = workflow_app.invoke(input_data, config=config)
+        
+        messages = result.get("messages", [])
+        return {
+            "thread_id": thread_id,
+            "messages": [
+                {
+                    "type": getattr(msg, "type", "message"),
+                    "content": getattr(msg, "content", str(msg)),
+                    "role": "assistant" if getattr(msg, "type", None) == "ai" else "user"
+                }
+                for msg in (messages if isinstance(messages, list) else [])
+            ]
+        }
+    except Exception as e:
+        print(f"[ERROR] search_all_threads: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/threads/{thread_id}/search")
 async def search_thread(thread_id: str, request: SearchRequest):
     """
@@ -182,6 +221,37 @@ async def send_message(thread_id: str, request: MessageRequest):
         }
     except Exception as e:
         print(f"[ERROR] send_message: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/threads/{thread_id}/runs/stream")
+async def stream_run(thread_id: str, request: MessageRequest):
+    """
+    Stream a run for Vercel AgentChat compatibility.
+    This endpoint doesn't actually stream, but returns the full response.
+    """
+    try:
+        config = {"configurable": {"thread_id": thread_id}}
+        input_data = {"messages": [{"role": "user", "content": request.message}]}
+        
+        # Run the workflow
+        result = workflow_app.invoke(input_data, config=config)
+        
+        # Return the final state with messages
+        messages = result.get("messages", [])
+        return {
+            "thread_id": thread_id,
+            "messages": [
+                {
+                    "type": getattr(msg, "type", "message"),
+                    "content": getattr(msg, "content", str(msg)),
+                    "role": "assistant" if getattr(msg, "type", None) == "ai" else "user"
+                }
+                for msg in (messages if isinstance(messages, list) else [])
+            ]
+        }
+    except Exception as e:
+        print(f"[ERROR] stream_run: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
