@@ -100,15 +100,12 @@ async def create_thread(request: Optional[ThreadCreateRequest] = None):
 async def search_all_threads(request: SearchRequest):
     """
     Global search endpoint (Vercel compatibility).
-    Returns empty results for metadata-only requests.
+    Returns empty assistants list for metadata-only requests.
     """
     try:
-        # If no message, return empty search results
+        # If no message, return empty assistants array (Vercel discovery format)
         if not request.message:
-            return {
-                "thread_id": None,
-                "messages": []
-            }
+            return []
         
         # If message provided, create new thread and search
         import uuid
