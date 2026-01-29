@@ -155,7 +155,8 @@ def get_llm():
             temperature=0.7,
             timeout=30
         )
-    except:
+    except Exception as e:
+        print(f"[LLM ERROR] Failed to initialize {LLM_MODEL}: {e}. Using fallback gpt-4o-mini")
         return ChatOpenAI(model="gpt-4o-mini", temperature=0.7, timeout=30)
 
 def get_message_text(msg):
@@ -1336,10 +1337,10 @@ def select_room(state: AgentState):
 5. Book through preferred site
 
 💡 **Pro Booking Tips:**
-✅ **Price:** £{state.get('final_flight_price', 0):.2f} is current estimate - book within 24h to lock it in
-✅ **Compare:** Check all three platforms above (prices can vary by £20-50+)
-✅ **Baggage:** Verify what's included before booking (can add £25-100 if not)
-✅ **Insurance:** Consider travel insurance (£15-40) for flexibility
+✅ **Price:** {sym}{state.get('final_flight_price', 0):.2f} is current estimate - book within 24h to lock it in
+✅ **Compare:** Check all three platforms above (prices can vary by {sym}20-50+)
+✅ **Baggage:** Verify what's included before booking (can add {sym}25-100 if not)
+✅ **Insurance:** Consider travel insurance ({sym}15-40) for flexibility
 ✅ **Timing:** Book on Tuesday/Wednesday mornings for best prices
 ✅ **Seats:** Standard selection often free, premium costs extra
 ✅ **Airport:** Arrive 2-3 hours early for international flights
@@ -1480,10 +1481,12 @@ Reply with **'1'** or **'2'**"""
         flight_total_local = state["selected_flight"].get("price_local", state["selected_flight"].get("price", 0))
         flight_total_usd = round(flight_total_local * rate, 2)
     
-    # Simple calculation: flight + hotel = total (no platform fees for information-only)
+    # Simple calculation: flight + hotel = total
+    # NOTE: This is information-only pricing. We don't process payments.
+    # Users will pay final amounts when booking on actual platforms.
     subtotal_local = hotel_total_local + flight_total_local
-    grand_total_local = subtotal_local  # No fees added
-    grand_total_usd = hotel_total_usd + flight_total_usd  # No fees added
+    grand_total_local = subtotal_local
+    grand_total_usd = hotel_total_usd + flight_total_usd
     
     # Build summary (information only - no payments)
     rate_info = f"💰 **Price Estimate in {currency}**\n_(Current exchange rate: 1 {currency} = {rate:.4f} USD as of {time.strftime('%H:%M UTC')})_" if currency not in ["USD", "USDC"] else ""
@@ -1510,8 +1513,9 @@ Reply with **'1'** or **'2'**"""
 • Cost: {sym}{flight_total_local:.2f} {currency}
 """)
     
+    hotel_name = state.get('selected_hotel', {}).get('name', 'Hotel') if state.get('selected_hotel') else 'Hotel'
     summary_parts.append(f"""🏨 **Hotel**
-• {state.get('selected_hotel', {}).get('name', 'Hotel')}
+• {hotel_name}
 • {selected_room['type']}
 • {state['check_in']} to {state['check_out']} ({nights} night{'s' if nights != 1 else ''})
 • {sym}{selected_room['price']}/night × {nights} = **{sym}{hotel_total_local:.2f} {currency}**
@@ -1717,14 +1721,6 @@ Safe travels! ✈️🏨""")
         "waiting_for_booking_confirmation": False,
         "messages": [AIMessage(content=confirmation_msg)]
     }
-    
-    currency = state.get("currency", "USD")
-    sym = state.get("currency_symbol", "$")
-    total_local = state["final_total_price_local"]
-    
-    # Build comprehensive booking guide
-    confirmation_parts = ["📋 **YOUR COMPLETE BOOKING INFORMATION**\n"]
-    confirmation_parts.append("✅ Here's everything you need to book your trip!\n")
 
 # --- 11. Node: Consultant ---
 def consultant_node(state: AgentState):
