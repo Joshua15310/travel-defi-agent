@@ -1911,6 +1911,12 @@ workflow.add_conditional_edges(
 
 memory = MemorySaver()
 workflow_app = workflow.compile(checkpointer=memory)
+
+# --- Add Metadata for Warden Registration ---
+# Set agent metadata that Warden Studio will read
+workflow_app.name = "Warden Travel Research"
+workflow_app.description = "AI travel assistant that searches real flights (Amadeus) and hotels (Booking.com) worldwide and provides booking links and instructions"
+
 # --- LangGraph entrypoint (EXPORTED) ---
 
 # If you already created a StateGraph somewhere above like:

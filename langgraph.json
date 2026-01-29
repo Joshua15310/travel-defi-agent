@@ -9,7 +9,22 @@
     "sib_api_v3_sdk"
   ],
   "graphs": {
-    "agent": "./agent.py:workflow_app"
+    "agent": {
+      "path": "./agent.py:workflow_app",
+      "name": "Warden Travel Research",
+      "description": "AI travel assistant that searches real flights (Amadeus) and hotels (Booking.com) worldwide and provides booking links and instructions",
+      "url": "https://travel-defi-agent-pmbt.onrender.com",
+      "version": "1.0.0",
+      "capabilities": {
+        "streaming": false,
+        "multi_turn": true,
+        "intent_understanding": "Parses natural language travel queries",
+        "search_flights": "Searches real flight availability via Amadeus API",
+        "search_hotels": "Searches real hotel availability via Booking.com API",
+        "itinerary_planning": "Builds complete trip itineraries with flights and hotels",
+        "booking_information": "Provides comprehensive booking instructions and links"
+      }
+    }
   },
   "env": ".env"
 }
