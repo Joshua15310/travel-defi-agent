@@ -99,17 +99,37 @@ async def create_thread(request: Optional[ThreadCreateRequest] = None):
 @app.post("/threads/{thread_id}/search")
 async def search_thread(thread_id: str, request: SearchRequest):
     """
-    Search/send a message to the agent.
+    Search/send a message to the agent OR fetch history.
     Format compatible with Vercel AgentChat app.
+    
+    If message is provided: sends message and returns updated thread
+    If no message: returns current thread history (like /history endpoint)
     """
     try:
-        # Get message from request
-        message = request.message if request.message else "Help me with travel"
-        
-        # Invoke the workflow with the thread_id
         config = {"configurable": {"thread_id": thread_id}}
         
-        input_data = {"messages": [{"role": "user", "content": message}]}
+        # If no message provided, return history (Vercel uses this for fetching)
+        if not request.message:
+            thread_state = memory.get(config)
+            if thread_state:
+                messages = thread_state.values.get("messages", [])
+            else:
+                messages = []
+            
+            return {
+                "thread_id": thread_id,
+                "messages": [
+                    {
+                        "type": getattr(msg, "type", "message"),
+                        "content": getattr(msg, "content", str(msg)),
+                        "role": "assistant" if getattr(msg, "type", None) == "ai" else "user"
+                    }
+                    for msg in (messages if isinstance(messages, list) else [])
+                ]
+            }
+        
+        # If message provided, invoke workflow
+        input_data = {"messages": [{"role": "user", "content": request.message}]}
         
         # Run the workflow
         result = workflow_app.invoke(input_data, config=config)
